@@ -1,9 +1,25 @@
 # handlers/station_merge_handler.py - 充电站多表合并
 
 import re
+import os
+import tempfile
+import importlib.util
 import pandas as pd
 from typing import List, Optional, Tuple
 from io import BytesIO
+
+def _get_operator_name_from_table_name(table_name: str) -> str:
+    try:
+        _dir = os.path.dirname(os.path.abspath(__file__))
+        _path = os.path.join(_dir, "operator_name_rules.py")
+        _spec = importlib.util.spec_from_file_location("operator_name_rules", _path)
+        if _spec and _spec.loader:
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            return _mod.get_operator_name_from_table_name(table_name or "")
+    except Exception:
+        pass
+    return ""
 
 # 充电站标准列：以你提供的指标为准，再加 1.2 补全所需的 运营商名称、运营商类型；不包含充电桩相关列（如接口数量、接口1标准等）
 STATION_STANDARD_COLUMNS = [
@@ -218,38 +234,14 @@ def process_one_file(
     if df.empty or len(df.columns) == 0:
         return None, f"「{table_name}」表头解析后无数据，已跳过", errors
 
-    if is_multi:
-        xl = pd.ExcelFile(BytesIO(file_bytes), engine=engine)
-        df_12 = df_13 = None
-        for sn in xl.sheet_names:
-            if "1.2" in sn or "运营商" in sn:
-                h12, err12 = _find_header_row_in_sheet(file_bytes, sn, engine, "运营商名称")
-                if err12 is None and h12 is not None:
-                    try:
-                        df_12 = _read_sheet_with_header(file_bytes, sn, h12, engine)
-                    except Exception:
-                        pass
-            if "1.3" in sn or "厂商" in sn:
-                h13, err13 = _find_header_row_in_sheet(file_bytes, sn, engine, "充电桩生产厂商名称")
-                if err13 is None and h13 is not None:
-                    try:
-                        df_13 = _read_sheet_with_header(file_bytes, sn, h13, engine)
-                    except Exception:
-                        pass
-        col_op = "充电站所属运营商"
-        col_man = "充电桩厂商编号"
-        if df_12 is not None or df_13 is not None:
-            df = _enrich_from_12_13(
-                df,
-                df_12 if df_12 is not None else pd.DataFrame(),
-                df_13 if df_13 is not None else pd.DataFrame(),
-                col_op,
-                col_man,
-            )
+    # 1.2 运营商补全已取消；充电站标准列不含厂商列，不再读取 1.2/1.3
 
     df = _align_to_standard(df)
     report_org = clean_report_org_name(file_name)
     df.insert(0, "上报机构", report_org)
+    op_name = _get_operator_name_from_table_name(file_name)
+    if "运营商名称" in df.columns:
+        df["运营商名称"] = op_name
     return df, None, errors
 
 
@@ -279,3 +271,47 @@ def merge_files(
         return None, success, errors, []
     result = pd.concat(merged, ignore_index=True)
     return result, success, errors, row_counts
+
+
+def merge_files_to_csv(
+    files: List[Tuple[str, bytes]],
+    engine: str = "openpyxl",
+) -> Tuple[Optional[bytes], List[str], List[str], List[Tuple[str, int]]]:
+    """大文件模式：合并为 CSV 字节流，返回 (csv_bytes, success_list, error_list, row_counts)。"""
+    success: List[str] = []
+    errors: List[str] = []
+    row_counts: List[Tuple[str, int]] = []
+    path = None
+    try:
+        first = True
+        for name, b in files:
+            try:
+                df, err, _ = process_one_file(b, name, engine)
+            except Exception as e:
+                errors.append(f"「{name}」合并时出错: {e}")
+                continue
+            if err:
+                errors.append(err)
+                continue
+            if df is None or len(df) == 0:
+                continue
+            if first:
+                fd, path = tempfile.mkstemp(suffix=".csv")
+                os.close(fd)
+                df.to_csv(path, index=False, encoding="utf-8-sig", mode="w")
+                first = False
+            else:
+                df.to_csv(path, index=False, encoding="utf-8-sig", mode="a", header=False)
+            success.append(name)
+            row_counts.append((name, len(df)))
+        if path is None or not os.path.exists(path):
+            return None, success, errors, []
+        with open(path, "rb") as f:
+            csv_bytes = f.read()
+        return csv_bytes, success, errors, row_counts
+    finally:
+        if path and os.path.exists(path):
+            try:
+                os.unlink(path)
+            except Exception:
+                pass

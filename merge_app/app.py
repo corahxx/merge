@@ -32,8 +32,40 @@ def station_merge_files(files, engine="openpyxl"):
         return None, [], ["充电站合并规则配置中，暂不可用"], []
     return _station_mod.merge_files(files, engine=engine)
 
+def pile_merge_files_to_csv(files, engine="openpyxl"):
+    if _pile_mod is None or not hasattr(_pile_mod, "merge_files_to_csv"):
+        return None, [], ["公共桩合并模块加载失败"], []
+    return _pile_mod.merge_files_to_csv(files, engine=engine)
+
+def station_merge_files_to_csv(files, engine="openpyxl"):
+    if _station_mod is None or not hasattr(_station_mod, "merge_files_to_csv"):
+        return None, [], ["充电站合并模块加载失败"], []
+    return _station_mod.merge_files_to_csv(files, engine=engine)
+
 # 预览行数（需求：仅展示前 10 条）
 PREVIEW_ROWS = 10
+
+
+def _parse_error_list(error_list):
+    """将 error_list（「文件名」原因）解析为 [{文件名, 未合并原因}, ...]。"""
+    rows = []
+    for e in error_list:
+        e = str(e).strip()
+        if e.startswith("「") and "」" in e:
+            idx = e.index("」")
+            rows.append({"文件名": e[1:idx].strip(), "未合并原因": e[idx + 1 :].strip()})
+        else:
+            rows.append({"文件名": "", "未合并原因": e})
+    return rows
+
+
+def _show_error_table(error_list):
+    """在 expander 中以表格展示未合并文件及原因。"""
+    if not error_list:
+        return
+    rows = _parse_error_list(error_list)
+    with st.expander("⚠️ 未合并的文件及原因", expanded=True):
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 # 标题区背景图（数据流/连接示意），作为标题内容背景、适应内容大小
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -299,6 +331,7 @@ if is_clean_view:
 
 # ---------- 合并页（公共桩 / 充电站） ----------
 merge_fn = pile_merge_files if is_pile else station_merge_files
+merge_csv_fn = pile_merge_files_to_csv if is_pile else station_merge_files_to_csv
 key_prefix = "pile_" if is_pile else "station_"
 mode_caption = "上传多个运营商 Excel/CSV，按统一表头自动识别并纵向合并，最左侧填充「上报机构」。" if is_pile else "上传多个充电站 Excel/CSV，按统一表头自动识别并纵向合并，最左侧填充「上报机构」。"
 
@@ -312,6 +345,16 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 st.markdown("---")
+
+merge_large_mode = st.radio(
+    "合并模式",
+    options=["小文件", "大文件"],
+    index=0,
+    key=f"{key_prefix}merge_mode_radio",
+    horizontal=True,
+    help="小文件：合并后在页面预览并导出 Excel/CSV；大文件：直接合并为 CSV，仅提供下载，不展示预览。",
+)
+is_large_file_mode = merge_large_mode == "大文件"
 
 merge_upload = st.file_uploader(
     "选择要合并的 Excel 或 CSV 文件（可多选）",
@@ -333,26 +376,43 @@ if merge_upload:
 
     if do_merge:
         files = [(f.name, f.getvalue()) for f in merge_upload]
-        with st.spinner("正在解析并合并..."):
+        with st.spinner("正在解析并合并..." if not is_large_file_mode else "正在合并为 CSV..."):
             try:
-                merged_df, success_list, error_list, row_counts = merge_fn(files)
-                if merged_df is not None:
-                    # 持久化合并结果到 session，便于结果区在 rerun 后仍显示
-                    st.session_state.merge_result_df = merged_df
-                    st.session_state.merge_result_success_list = success_list
-                    st.session_state.merge_result_error_list = error_list or []
-                    st.session_state.merge_result_row_counts = row_counts or []
-                    st.session_state.merge_result_mode = "pile" if is_pile else "station"
-                    st.rerun()
+                if is_large_file_mode:
+                    csv_bytes, success_list, error_list, row_counts = merge_csv_fn(files)
+                    if csv_bytes is not None:
+                        st.session_state.merge_result_csv_bytes = csv_bytes
+                        st.session_state.merge_result_success_list = success_list
+                        st.session_state.merge_result_error_list = error_list or []
+                        st.session_state.merge_result_row_counts = row_counts or []
+                        st.session_state.merge_result_mode = "pile" if is_pile else "station"
+                        st.session_state.merge_result_is_large = True
+                        st.session_state.pop("merge_result_df", None)
+                        st.rerun()
+                    else:
+                        st.error("没有可合并的数据。")
+                        if error_list:
+                            _show_error_table(error_list)
+                        with st.expander("📋 合并规则说明"):
+                            st.caption("大文件模式：直接合并为 CSV 并下载，不展示预览。")
                 else:
-                    st.error("没有可合并的数据。")
-                    if error_list:
-                        with st.expander("⚠️ 未合并的文件及原因", expanded=True):
-                            for e in error_list:
-                                st.markdown(f"- {e}")
+                    merged_df, success_list, error_list, row_counts = merge_fn(files)
+                    if merged_df is not None:
+                        st.session_state.merge_result_df = merged_df
+                        st.session_state.merge_result_success_list = success_list
+                        st.session_state.merge_result_error_list = error_list or []
+                        st.session_state.merge_result_row_counts = row_counts or []
+                        st.session_state.merge_result_mode = "pile" if is_pile else "station"
+                        st.session_state.merge_result_is_large = False
+                        st.session_state.pop("merge_result_csv_bytes", None)
+                        st.rerun()
+                    else:
+                        st.error("没有可合并的数据。")
+                        if error_list:
+                            _show_error_table(error_list)
                     with st.expander("📋 合并规则说明"):
                         if is_pile:
-                            st.markdown("公共桩：表头含「充电桩编号」或「充电桩编码」；多 Sheet 以 1.1 为主表；1.2/1.3 补全运营商与厂商信息。")
+                            st.markdown("公共桩：表头含「充电桩编号」或「充电桩编码」；多 Sheet 以 1.1 为主表；1.3 补全厂商信息。")
                         else:
                             st.markdown("充电站：表头含「所属充电站编号」或「充电站编码」；多 Sheet 为 1.1 → 含「充电站」→ 否则报错。")
             except Exception as e:
@@ -362,14 +422,58 @@ if merge_upload:
                 with st.expander("错误详情", expanded=False):
                     st.code(traceback.format_exc())
 
-    # 结果区：有当前模式的合并结果时显示（含下载与「数据清洗」入口）
+    # 结果区：有当前模式的合并结果时显示（小文件：预览+双格式导出；大文件：仅 CSV 下载）
     current_result_mode = st.session_state.get("merge_result_mode")
-    has_result = (
+    is_large_result = st.session_state.get("merge_result_is_large", False)
+    has_small_result = (
         current_result_mode == ("pile" if is_pile else "station")
+        and not is_large_result
         and "merge_result_df" in st.session_state
         and st.session_state.merge_result_df is not None
     )
-    if has_result:
+    has_large_result = (
+        current_result_mode == ("pile" if is_pile else "station")
+        and is_large_result
+        and "merge_result_csv_bytes" in st.session_state
+        and st.session_state.merge_result_csv_bytes is not None
+    )
+    if has_large_result:
+        success_list = st.session_state.get("merge_result_success_list", [])
+        error_list = st.session_state.get("merge_result_error_list", [])
+        row_counts = st.session_state.get("merge_result_row_counts", [])
+        csv_bytes = st.session_state.merge_result_csv_bytes
+        total_rows = sum(n for _, n in row_counts)
+        st.success("合并完成（大文件模式）")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("合并表行数", f"{total_rows:,}")
+        with m2:
+            st.metric("合并成功数", len(success_list))
+        with m3:
+            st.metric("未合并文件数", len(error_list), delta=None if not error_list else "见下方")
+        if row_counts:
+            st.markdown("**各表行数**")
+            st.dataframe(
+                pd.DataFrame(row_counts, columns=["文件名", "行数"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.markdown("#### 📥 导出")
+        _export_base = "充电桩合并结果" if is_pile else "充电站合并结果"
+        _export_date = date.today().strftime("%Y%m%d")
+        _name_csv = f"{_export_base}_{_export_date}.csv"
+        st.download_button(
+            "下载合并结果 CSV",
+            data=csv_bytes,
+            file_name=_name_csv,
+            mime="text/csv",
+            key=f"{key_prefix}download_merged_csv_large",
+        )
+        if error_list:
+            st.markdown("---")
+            _show_error_table(error_list)
+        st.caption("大文件模式不展示合并结果预览，请直接下载 CSV。")
+    elif has_small_result:
         merged_df = st.session_state.merge_result_df
         success_list = st.session_state.get("merge_result_success_list", [])
         error_list = st.session_state.get("merge_result_error_list", [])
@@ -426,9 +530,7 @@ if merge_upload:
             st.rerun()
         if error_list:
             st.markdown("---")
-            with st.expander("⚠️ 未合并的文件及原因", expanded=False):
-                for e in error_list:
-                    st.markdown(f"- {e}")
+            _show_error_table(error_list)
         st.markdown("#### 📊 合并结果预览")
         st.dataframe(merged_df.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
         st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(merged_df):,} 行。")
@@ -437,14 +539,13 @@ if merge_upload:
                 st.markdown("""
 - **表头**：首行含「单位」「参考」「编码方法」之一时，取第二行含「充电桩编号」或「充电桩编码」为表头；否则取首行或前 3 行内第一个含「充电桩编号」/「充电桩编码」的行。表头阶段编号与编码等同。
 - **多 Sheet**：若存在名称含「1.1」的 Sheet，则以其为主表；否则取第一个有内容的 Sheet。
-- **1.2 / 1.3**：1.2 表头行为含「运营商名称」的行，1.3 为含「充电桩生产厂商名称」的行；用于补全主表运营商/厂商名称与类型。
+- **1.3**：名称含「1.3」的 Sheet 表头行为含「充电桩生产厂商名称」的行，用于补全主表厂商名称与类型（1.2 运营商补全已取消）。
 - **上报机构**：最左侧一列，由文件名清洗（去掉 `202512_公共桩_`、`_公共桩`、`附件一：`及其后内容）。
                 """)
             else:
                 st.markdown("""
 - **表头**：前 3 行内第一个包含「所属充电站编号」或「充电站编码」的行作为表头。
-- **多 Sheet**：1.1 优先 → 名称含「充电站」的 Sheet → 否则报错「多sheet表无法确定主表」。
-- **1.2 / 1.3**：1.2 为名称含「1.2」或「运营商」的 Sheet，表头行含「运营商名称」；1.3 为含「1.3」或「厂商」的 Sheet，表头行含「充电桩生产厂商名称」。补全主表运营商/厂商名称与类型。
+- **多 Sheet**：1.1 优先 → 名称含「充电站」的 Sheet → 否则报错「多sheet表无法确定主表」。（1.2 运营商补全已取消。）
 - **上报机构**：与公共桩同一套清洗规则。
                 """)
 else:
