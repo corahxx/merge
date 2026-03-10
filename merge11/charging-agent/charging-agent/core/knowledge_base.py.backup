@@ -1,0 +1,294 @@
+# core/knowledge_base.py
+
+class KnowledgeBase:
+    """
+    充电桩领域知识库：用于将用户口语化表达映射到数据库字段
+    """
+
+    # 运营商别名词典（用户可能说的简称 → 实际字段值）
+    OPERATOR_NICKNAMES = {
+        # 星星相关
+        "星星": "星星充电",
+        "星星快充": "星星充电",
+        "星充": "星星充电",
+        "万邦": "星星充电",
+        "万帮": "星星充电",
+
+        # 特来电
+        "特来": "特来电",
+        "特来电充电": "特来电",
+        "特来电快充": "特来电",
+        "TELD": "特来电",
+
+        # 国家电网
+        "国网": "国家电网",
+        "国家网": "国家电网",
+        "国家电网公司": "国家电网",
+        "国电": "国家电网",
+
+        # 南方电网
+        "南网": "南方电网",
+        "南方网": "南方电网",
+        "南方电网公司": "南方电网",
+
+        # 云快充
+        "云快": "云快充",
+        "云充电": "云快充",
+        "YKC": "云快充",
+
+        # 小桔
+        "小桔": "小桔充电",
+        "滴滴充电": "小桔充电",
+        "滴滴": "小桔充电",
+
+        # 中石化
+        "中石化": "中石化易电桩",
+        "中石化易电": "中石化易电桩",
+        "易电桩": "中石化易电桩",
+        "石化易电": "中石化易电桩",
+
+        # 其他常见运营商
+        "蔚来": "蔚来能源",
+        "蔚来充电": "蔚来能源",
+        "NIO": "蔚来能源",
+        "小鹏": "小鹏充电",
+        "小鹏充电": "小鹏充电",
+        "XPEV": "小鹏充电",
+        "理想": "理想汽车",
+        "理想充电": "理想汽车",
+        "LI": "理想汽车",
+        "特斯拉": "特斯拉",
+        "Tesla": "特斯拉",
+        "TSL": "特斯拉",
+        "开迈斯": "开迈斯",
+        "CAMS": "开迈斯",
+        "依威": "依威能源",
+        "EV Power": "依威能源",
+        "依威能源": "依威能源",
+        "普天": "普天新能源",
+        "普天新能源": "普天新能源",
+        "万马": "万马新能源",
+        "万马爱充": "万马新能源",
+        "上汽": "上汽安悦",
+        "安悦": "上汽安悦",
+        "上汽安悦": "上汽安悦",
+    }
+
+    # 区域标准化映射（用户可能说的简称 → 标准格式）
+    LOCATION_NICKNAMES = {
+        # 北京
+        "朝阳": "北京市朝阳区",
+        "海淀": "北京市海淀区",
+        "丰台": "北京市丰台区",
+        "西城": "北京市西城区",
+        "东城": "北京市东城区",
+        "通州": "北京市通州区",
+        "昌平": "北京市昌平区",
+        "大兴": "北京市大兴区",
+        "顺义": "北京市顺义区",
+        "房山": "北京市房山区",
+        "北京": "北京市",
+
+        # 上海
+        "浦东": "上海市浦东新区",
+        "嘉定": "上海市嘉定区",
+        "徐汇": "上海市徐汇区",
+        "黄浦": "上海市黄浦区",
+        "静安": "上海市静安区",
+        "长宁": "上海市长宁区",
+        "普陀": "上海市普陀区",
+        "虹口": "上海市虹口区",
+        "杨浦": "上海市杨浦区",
+        "闵行": "上海市闵行区",
+        "宝山": "上海市宝山区",
+        "松江": "上海市松江区",
+        "青浦": "上海市青浦区",
+        "奉贤": "上海市奉贤区",
+        "崇明": "上海市崇明区",
+        "上海": "上海市",
+
+        # 深圳
+        "宝安": "深圳市宝安区",
+        "南山": "深圳市南山区",
+        "福田": "深圳市福田区",
+        "罗湖": "深圳市罗湖区",
+        "龙岗": "深圳市龙岗区",
+        "龙华": "深圳市龙华区",
+        "坪山": "深圳市坪山区",
+        "光明": "深圳市光明区",
+        "盐田": "深圳市盐田区",
+        "深圳": "深圳市",
+
+        # 广州
+        "天河": "广州市天河区",
+        "越秀": "广州市越秀区",
+        "海珠": "广州市海珠区",
+        "荔湾": "广州市荔湾区",
+        "白云": "广州市白云区",
+        "番禺": "广州市番禺区",
+        "黄埔": "广州市黄埔区",
+        "花都": "广州市花都区",
+        "南沙": "广州市南沙区",
+        "从化": "广州市从化区",
+        "增城": "广州市增城区",
+        "广州": "广州市",
+
+        # 杭州
+        "余杭": "杭州市余杭区",
+        "西湖": "杭州市西湖区",
+        "上城": "杭州市上城区",
+        "下城": "杭州市下城区",
+        "拱墅": "杭州市拱墅区",
+        "江干": "杭州市江干区",
+        "滨江": "杭州市滨江区",
+        "萧山": "杭州市萧山区",
+        "临安": "杭州市临安区",
+        "富阳": "杭州市富阳区",
+        "杭州": "杭州市",
+
+        # 其他一线城市
+        "成华": "成都市成华区",
+        "锦江": "成都市锦江区",
+        "武侯": "成都市武侯区",
+        "青羊": "成都市青羊区",
+        "金牛": "成都市金牛区",
+        "成都": "成都市",
+        "苏州": "苏州市",
+        "南京": "南京市",
+        "武汉": "武汉市",
+        "重庆": "重庆市",
+        "西安": "西安市",
+        "天津": "天津市",
+        "郑州": "郑州市",
+        "长沙": "长沙市",
+        "青岛": "青岛市",
+        "大连": "大连市",
+        "宁波": "宁波市",
+        "厦门": "厦门市",
+        "无锡": "无锡市",
+        "佛山": "佛山市",
+        "东莞": "东莞市",
+        "合肥": "合肥市",
+        "昆明": "昆明市",
+        "福州": "福州市",
+    }
+
+    # 充电桩类型映射（用户表达 → 数据库值）
+    PILE_TYPE_NICKNAMES = {
+        "快充": "快充",
+        "直流": "快充",
+        "DC": "快充",
+        "慢充": "慢充",
+        "交流": "慢充",
+        "AC": "慢充",
+        "超充": "超充",
+        "超级充电": "超充",
+        "超级快充": "超充",
+        "超快充": "超充",
+    }
+
+    # 时间表达映射（用户表达 → SQL时间表达式说明）
+    TIME_EXPRESSIONS = {
+        "今天": "CURDATE()",
+        "今日": "CURDATE()",
+        "昨天": "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+        "昨日": "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+        "前天": "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
+        "本周": "WEEK(CURDATE())",
+        "这周": "WEEK(CURDATE())",
+        "上周": "WEEK(CURDATE()) - 1",
+        "本月": "MONTH(CURDATE())",
+        "这个月": "MONTH(CURDATE())",
+        "上月": "MONTH(CURDATE()) - 1",
+        "今年": "YEAR(CURDATE())",
+        "去年": "YEAR(CURDATE()) - 1",
+        "最近7天": "DATE_SUB(CURDATE(), INTERVAL 7 DAY)",
+        "最近一周": "DATE_SUB(CURDATE(), INTERVAL 7 DAY)",
+        "最近30天": "DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
+        "最近一月": "DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
+        "最近": "最近30天",  # 默认最近30天
+    }
+
+    # 字段映射表（告诉系统哪个词属于哪个字段）
+    FIELD_MAPPING = {
+        "运营商名称": list(OPERATOR_NICKNAMES.keys()) + ["运营商", "公司", "哪家", "品牌", "品牌商"],
+        "区县_中文": list(LOCATION_NICKNAMES.keys()) + ["地区", "区域", "地方", "城市", "省市"],
+        "充电站位置": ["位置", "在哪", "地址", "地处", "哪里", "什么地方", "地点"],
+        "充电站名称": ["充电站", "站点", "桩站", "场站", "站名"],
+        "充电桩类型": list(PILE_TYPE_NICKNAMES.keys()) + ["类型", "哪种", "什么类型"],
+        "充电开始时间": list(TIME_EXPRESSIONS.keys()) + ["什么时候", "时间", "日期", "何时", "哪天", "期间"],
+        "充电桩编号": ["编号", "ID", "编码", "代码", "桩号"],
+    }
+
+    @classmethod
+    def get_actual_value(cls, field: str, nickname: str) -> str:
+        """根据字段和昵称返回真实值"""
+        if field == "运营商名称":
+            return cls.OPERATOR_NICKNAMES.get(nickname, nickname)
+        elif field == "区县_中文":
+            return cls.LOCATION_NICKNAMES.get(nickname, nickname)
+        elif field == "充电桩类型":
+            return cls.PILE_TYPE_NICKNAMES.get(nickname, nickname)
+        else:
+            return nickname
+
+    @classmethod
+    def get_time_sql_hint(cls, time_expr: str) -> str:
+        """
+        获取时间表达式的SQL提示
+        :param time_expr: 用户输入的时间表达式
+        :return: SQL表达式或提示文本
+        """
+        return cls.TIME_EXPRESSIONS.get(time_expr, None)
+
+    @classmethod
+    def normalize_location(cls, location: str) -> str:
+        """
+        标准化地理位置表达
+        :param location: 用户输入的地理位置
+        :return: 标准化后的地理位置
+        """
+        # 先检查完整的匹配
+        if location in cls.LOCATION_NICKNAMES:
+            return cls.LOCATION_NICKNAMES[location]
+        
+        # 模糊匹配（包含关系）
+        for key, value in cls.LOCATION_NICKNAMES.items():
+            if key in location or location in key:
+                return value
+        
+        return location
+
+    @classmethod
+    def normalize_operator(cls, operator: str) -> str:
+        """
+        标准化运营商名称
+        :param operator: 用户输入的运营商名称
+        :return: 标准化后的运营商名称
+        """
+        # 先检查完整的匹配
+        if operator in cls.OPERATOR_NICKNAMES:
+            return cls.OPERATOR_NICKNAMES[operator]
+        
+        # 模糊匹配（包含关系）
+        for key, value in cls.OPERATOR_NICKNAMES.items():
+            if key in operator or operator in key:
+                return value
+        
+        return operator
+
+    @classmethod
+    def get_all_operators(cls) -> list:
+        """获取所有标准运营商名称列表（去重）"""
+        return sorted(list(set(cls.OPERATOR_NICKNAMES.values())))
+
+    @classmethod
+    def get_all_cities(cls) -> list:
+        """获取所有城市列表"""
+        cities = set()
+        for value in cls.LOCATION_NICKNAMES.values():
+            # 提取城市名（去掉区名）
+            if "市" in value:
+                city = value.split("市")[0] + "市"
+                cities.add(city)
+        return sorted(list(cities))

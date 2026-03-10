@@ -1,0 +1,12 @@
+[server]
+# 文件上传最大限制 (单位: MB)
+maxUploadSize = 500
+
+[theme]
+# EVCIPA 中国充电联盟风格主题
+base = "light"
+primaryColor = "#2DB7B0"        # 青绿色 - 主色调
+backgroundColor = "#FFFFFF"      # 白色背景
+secondaryBackgroundColor = "#F0F8F7"  # 浅青绿色 - 侧边栏背景
+textColor = "#333333"           # 深灰文字
+font = "sans serif"

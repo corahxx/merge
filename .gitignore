@@ -1,0 +1,6 @@
+# Build outputs and large binaries
+*.exe
+*.pkg
+**/build/
+merge11/charging-agent/charging-agent/charging-agent-launcher.exe
+merge11/charging-agent/charging-agent/build/
