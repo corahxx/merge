@@ -22,6 +22,7 @@ _pile_mod = _load_handler("table_merge_handler", "table_merge_handler.py")
 _station_mod = _load_handler("station_merge_handler", "station_merge_handler.py")
 _clean_mod = _load_handler("data_clean_handler", "data_clean_handler.py")
 _energy_mod = _load_handler("energy_merge_handler", "energy_merge_handler.py")
+_generic_mod = _load_handler("generic_merge_handler", "generic_merge_handler.py")
 
 def pile_merge_files(files, engine="openpyxl"):
     if _pile_mod is None:
@@ -52,6 +53,26 @@ def energy_merge_aggregate(files, engine="openpyxl"):
     if _energy_mod is None or not hasattr(_energy_mod, "merge_aggregate"):
         return None, [], ["电量表合并模块加载失败"], []
     return _energy_mod.merge_aggregate(files, engine=engine)
+
+def generic_get_columns(files, engine="openpyxl"):
+    if _generic_mod is None or not hasattr(_generic_mod, "get_columns_from_files"):
+        return [], [], ["其他类型表格合并模块加载失败"]
+    return _generic_mod.get_columns_from_files(files, engine=engine)
+
+def generic_merge_vertical(files, selected_columns, engine="openpyxl"):
+    if _generic_mod is None or not hasattr(_generic_mod, "merge_vertical"):
+        return None, [], ["其他类型表格合并模块加载失败"]
+    return _generic_mod.merge_vertical(files, selected_columns, engine=engine)
+
+def generic_merge_horizontal(files, align_col, merge_columns, column_name_mode, with_aggregate, engine="openpyxl"):
+    if _generic_mod is None or not hasattr(_generic_mod, "merge_horizontal"):
+        return None, [], ["其他类型表格合并模块加载失败"]
+    return _generic_mod.merge_horizontal(files, align_col, merge_columns, column_name_mode, with_aggregate, engine=engine)
+
+def generic_run_validation(df, rules):
+    if _generic_mod is None or not hasattr(_generic_mod, "run_validation"):
+        return []
+    return _generic_mod.run_validation(df, rules)
 
 # 预览行数（需求：仅展示前 10 条）
 PREVIEW_ROWS = 10
@@ -98,8 +119,8 @@ st.set_page_config(
 )
 
 # 侧栏与主区标题通用样式（功能栏图标卡片 + 标题区背景图）
-SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "📊 电量表多表合并", "🧹 数据清洗"]
-SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "电量表多表合并", "数据清洗"]
+SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "📊 电量表多表合并", "📑 合并汇总其他类型表格", "🧹 数据清洗"]
+SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "电量表多表合并", "合并汇总其他类型表格", "数据清洗"]
 
 def _sidebar_display_to_value(display: str) -> str:
     for i, d in enumerate(SIDEBAR_OPTIONS_DISPLAY):
@@ -162,6 +183,7 @@ else:
 
 is_pile = st.session_state.merge_mode == "公共桩多表合并"
 is_energy = st.session_state.merge_mode == "电量表多表合并"
+is_generic = st.session_state.merge_mode == "合并汇总其他类型表格"
 is_clean_view = st.session_state.main_view in ("clean_upload", "clean_after_merge")
 
 # ---------- 数据清洗页（双入口共用同一套 UI） ----------
@@ -508,6 +530,213 @@ if is_energy:
         st.info("👆 请选择至少一个 Excel 或 CSV 文件，然后点击「仅合并」或「合并汇总」。")
         with st.expander("📋 合并规则说明"):
             st.markdown("详见《电量表合并规则》文档（`电量表合并规则.md`）。")
+    st.stop()
+
+# ---------- 合并汇总其他类型表格页 ----------
+if is_generic:
+    st.markdown("""
+    <div class="header-banner">
+      <div class="header-inner">
+        <span class="header-icon">📑</span>
+        <h1 class="header-title">合并汇总其他类型表格</h1>
+      </div>
+      <p class="header-caption">上传多张数据表后，通过下拉框配置合并方向、字段与对齐方式，支持纵向拼接或横向按键对齐合并。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    generic_upload = st.file_uploader(
+        "选择要合并的 Excel 或 CSV 文件（可多选）",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+        key="generic_table_merge_upload",
+        help="支持 .xlsx / .xls / .csv，首行为表头。",
+    )
+    if generic_upload:
+        files_tuples = [(f.name, f.getvalue()) for f in generic_upload]
+        st.markdown("#### 📁 已选文件")
+        file_list = [{"序号": i, "文件名": f.name, "大小 (MB)": f"{f.size / (1024*1024):.2f}"} for i, f in enumerate(generic_upload, 1)]
+        st.dataframe(pd.DataFrame(file_list), use_container_width=True, hide_index=True)
+        cols_list, _success, _errs = generic_get_columns(files_tuples)
+        if not cols_list and _errs:
+            st.warning("无法从已选文件中解析表头，请检查文件格式。")
+            for e in _errs[:5]:
+                st.caption(e)
+        else:
+            merge_direction = st.radio("合并方向", options=["纵向", "横向"], index=0, key="generic_merge_direction", horizontal=True)
+            if merge_direction == "纵向":
+                vertical_fields = st.multiselect("纵向合并字段", options=cols_list or [], default=cols_list[:3] if cols_list else [], key="generic_vertical_fields", help="选择需要纵向合并的列")
+                run_vertical = st.button("执行合并", type="primary", key="generic_run_vertical")
+                if run_vertical:
+                    if not vertical_fields:
+                        st.error("请至少选择一列纵向合并字段。")
+                    else:
+                        with st.spinner("正在纵向合并..."):
+                            try:
+                                out_df, succ, errs = generic_merge_vertical(files_tuples, vertical_fields)
+                                if out_df is not None:
+                                    st.session_state.merge_result_df = out_df
+                                    st.session_state.merge_result_success_list = succ
+                                    st.session_state.merge_result_error_list = errs or []
+                                    st.session_state.merge_result_mode = "generic"
+                                    st.rerun()
+                                else:
+                                    st.error("合并失败或无数据。")
+                                    if errs:
+                                        _show_error_table(errs)
+                            except Exception as e:
+                                st.error(f"合并失败：{e}")
+                                import traceback
+                                with st.expander("错误详情", expanded=False):
+                                    st.code(traceback.format_exc())
+            else:
+                col_name_mode = st.selectbox("新增列名称", options=["表名称", "表名称去重"], index=0, key="generic_col_name_mode", help="横向合并时每表对应新列的名称来源")
+                align_col = st.selectbox("横向对齐字段", options=cols_list or [], index=0 if cols_list else 0, key="generic_align_col", help="按此列取值对齐不同表的行")
+                horizontal_fields = st.multiselect("横向合并字段", options=cols_list or [], default=cols_list[:2] if cols_list else [], key="generic_horizontal_fields", help="这些列将按对齐结果以新列形式追加")
+                merge_mode_h = st.radio("合并方式", options=["仅合并", "合并+汇总"], index=0, key="generic_merge_mode_h", horizontal=True)
+                run_horizontal = st.button("执行合并", type="primary", key="generic_run_horizontal")
+                if run_horizontal:
+                    if not align_col or not horizontal_fields:
+                        st.error("请选择横向对齐字段和至少一列横向合并字段。")
+                    else:
+                        with st.spinner("正在横向合并..."):
+                            try:
+                                out_df, succ, errs = generic_merge_horizontal(
+                                    files_tuples, align_col, horizontal_fields, col_name_mode, merge_mode_h == "合并+汇总"
+                                )
+                                if out_df is not None:
+                                    st.session_state.merge_result_df = out_df
+                                    st.session_state.merge_result_success_list = succ
+                                    st.session_state.merge_result_error_list = errs or []
+                                    st.session_state.merge_result_mode = "generic"
+                                    st.rerun()
+                                else:
+                                    st.error("合并失败或无数据。")
+                                    if errs:
+                                        _show_error_table(errs)
+                            except Exception as e:
+                                st.error(f"合并失败：{e}")
+                                import traceback
+                                with st.expander("错误详情", expanded=False):
+                                    st.code(traceback.format_exc())
+
+    has_generic_result = (
+        st.session_state.get("merge_result_mode") == "generic"
+        and "merge_result_df" in st.session_state
+        and st.session_state.merge_result_df is not None
+    )
+    if has_generic_result:
+        merged_df = st.session_state.merge_result_df
+        success_list = st.session_state.get("merge_result_success_list", [])
+        error_list = st.session_state.get("merge_result_error_list", [])
+        st.success("合并完成")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("合并表行数", f"{len(merged_df):,}")
+        with m2:
+            st.metric("合并成功数", len(success_list))
+        with m3:
+            st.metric("未合并文件数", len(error_list), delta=None if not error_list else "见下方")
+        if "generic_test_rules" not in st.session_state:
+            st.session_state.generic_test_rules = []
+        _prev_shape = getattr(st.session_state, "generic_test_result_df_shape", None)
+        if _prev_shape != merged_df.shape:
+            st.session_state.pop("generic_test_result", None)
+            st.session_state.generic_test_result_df_shape = merged_df.shape
+        st.markdown("#### 🔍 一键测试")
+        cols = list(merged_df.columns.astype(str))
+        for ri, rule in enumerate(st.session_state.generic_test_rules):
+            with st.container():
+                left_f = rule.get("left_field", "")
+                left_op = rule.get("left_op") or "（单字段）"
+                rel = rule.get("relation", "=")
+                right_f = rule.get("right_field") if rule.get("right_field") is not None else str(rule.get("right_constant", ""))
+                st.caption(f"规则{ri+1}: {left_f} {left_op} {rel} {right_f}")
+                if st.button("删除", key=f"generic_del_rule_{ri}"):
+                    st.session_state.generic_test_rules.pop(ri)
+                    st.rerun()
+        with st.expander("添加一条测试规则", expanded=False):
+            left_field = st.selectbox("左侧字段", options=cols, key="generic_left_field")
+            left_op = st.selectbox("左侧运算符（单字段选「无」）", options=["无", "+", "-", "*", "/"], key="generic_left_op")
+            left_right_type = st.radio("左侧第二项", options=["字段", "常数"], key="generic_left_right_type", horizontal=True)
+            if left_right_type == "字段":
+                left_right_field = st.selectbox("左侧第二项字段", options=cols, key="generic_left_right_field")
+                left_right_constant = None
+            else:
+                left_right_constant = st.number_input("左侧第二项常数", value=0.0, key="generic_left_right_constant")
+                left_right_field = None
+            relation = st.selectbox("关系", options=["=", ">", ">=", "<", "<=", "!="], key="generic_relation")
+            right_type = st.radio("右侧为", options=["字段", "常数"], key="generic_right_type", horizontal=True)
+            if right_type == "字段":
+                right_field = st.selectbox("右侧字段", options=cols, key="generic_right_field")
+                right_constant = None
+            else:
+                right_constant = st.number_input("右侧常数", value=0.0, key="generic_right_constant")
+                right_field = None
+            tolerance = st.number_input("等于时的容差（可选）", value=1e-6, format="%e", key="generic_tolerance") if relation == "=" else None
+            if st.button("添加规则", key="generic_add_rule"):
+                op_map = {"无": None, "+": "+", "-": "-", "*": "*", "/": "/"}
+                st.session_state.generic_test_rules.append({
+                    "left_field": left_field, "left_op": op_map[left_op],
+                    "left_right_type": "field" if left_right_type == "字段" else "constant",
+                    "left_right_field": left_right_field if left_right_type == "字段" else None,
+                    "left_right_constant": left_right_constant if left_right_type == "常数" else None,
+                    "relation": relation, "right_field": right_field if right_type == "字段" else None,
+                    "right_constant": right_constant if right_type == "常数" else None,
+                    "tolerance": tolerance,
+                })
+                st.rerun()
+        run_test = st.button("一键测试", type="primary", key="generic_run_test")
+        if run_test and st.session_state.generic_test_rules:
+            with st.spinner("正在校验..."):
+                st.session_state.generic_test_result = generic_run_validation(merged_df, st.session_state.generic_test_rules)
+        if st.session_state.get("generic_test_result"):
+            tr = st.session_state.generic_test_result
+            passed = sum(1 for x in tr if x["passed"])
+            failed = len(tr) - passed
+            total_v = sum(x["violation_count"] for x in tr)
+            st.markdown(f"**测试结果**：共 {len(tr)} 条规则，通过 {passed} 条，不通过 {failed} 条；违规行合计 {total_v} 行。")
+            all_violation_dfs = []
+            for x in tr:
+                with st.expander(f"{x['label']} — {'通过' if x['passed'] else '不通过'}（违规 {x['violation_count']} 行）", expanded=not x["passed"]):
+                    if not x["passed"] and x["violation_df"] is not None and len(x["violation_df"]) > 0:
+                        st.dataframe(x["violation_df"].head(50), use_container_width=True, hide_index=True)
+                        all_violation_dfs.append(x["violation_df"])
+            if all_violation_dfs:
+                combined_v = pd.concat(all_violation_dfs, ignore_index=True).drop_duplicates()
+                _vb = BytesIO()
+                combined_v.to_excel(_vb, index=False, engine="openpyxl")
+                _vb.seek(0)
+                st.download_button("导出违规行 Excel", data=_vb.getvalue(), file_name=f"一键测试违规行_{date.today().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="generic_export_violations")
+        st.markdown("#### 📥 导出")
+        _export_date = date.today().strftime("%Y%m%d")
+        _default_name = f"其他类型表格合并结果_{_export_date}"
+        _export_name = st.text_input("导出文件名（可修改，不含扩展名）", value=_default_name, key="generic_export_filename", help="修改后点击下方按钮导出。")
+        _base = (_export_name.strip() or _default_name).replace("\\", "_").replace("/", "_").replace(":", "_")
+        c1, c2 = st.columns(2)
+        with c1:
+            buf = BytesIO()
+            merged_df.to_excel(buf, index=False, engine="openpyxl")
+            buf.seek(0)
+            st.download_button("下载 Excel", data=buf.getvalue(), file_name=f"{_base}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="generic_download_xlsx")
+        with c2:
+            buf_csv = BytesIO()
+            merged_df.to_csv(buf_csv, index=False, encoding="utf-8-sig")
+            buf_csv.seek(0)
+            st.download_button("下载 CSV", data=buf_csv.getvalue(), file_name=f"{_base}.csv", mime="text/csv", key="generic_download_csv")
+        if error_list:
+            st.markdown("---")
+            _show_error_table(error_list)
+        st.markdown("#### 📊 结果预览")
+        st.dataframe(merged_df.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
+        st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(merged_df):,} 行。")
+        with st.expander("📋 合并规则说明"):
+            st.markdown("详见《其他类型表格合并规则》文档（`其他类型表格合并规则.md`）。")
+    elif generic_upload and not has_generic_result:
+        st.info("请在上方选择合并方向与字段后点击「执行合并」。")
+    else:
+        st.info("👆 请选择至少一个 Excel 或 CSV 文件，再配置合并方向与字段。")
+        with st.expander("📋 合并规则说明"):
+            st.markdown("详见《其他类型表格合并规则》文档（`其他类型表格合并规则.md`）。")
     st.stop()
 
 # ---------- 合并页（公共桩 / 充电站） ----------
