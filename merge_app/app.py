@@ -21,6 +21,7 @@ def _load_handler(module_name: str, file_name: str):
 _pile_mod = _load_handler("table_merge_handler", "table_merge_handler.py")
 _station_mod = _load_handler("station_merge_handler", "station_merge_handler.py")
 _clean_mod = _load_handler("data_clean_handler", "data_clean_handler.py")
+_energy_mod = _load_handler("energy_merge_handler", "energy_merge_handler.py")
 
 def pile_merge_files(files, engine="openpyxl"):
     if _pile_mod is None:
@@ -41,6 +42,16 @@ def station_merge_files_to_csv(files, engine="openpyxl"):
     if _station_mod is None or not hasattr(_station_mod, "merge_files_to_csv"):
         return None, [], ["充电站合并模块加载失败"], []
     return _station_mod.merge_files_to_csv(files, engine=engine)
+
+def energy_merge_only(files, engine="openpyxl"):
+    if _energy_mod is None or not hasattr(_energy_mod, "merge_only"):
+        return None, [], ["电量表合并模块加载失败"], []
+    return _energy_mod.merge_only(files, engine=engine)
+
+def energy_merge_aggregate(files, engine="openpyxl"):
+    if _energy_mod is None or not hasattr(_energy_mod, "merge_aggregate"):
+        return None, [], ["电量表合并模块加载失败"], []
+    return _energy_mod.merge_aggregate(files, engine=engine)
 
 # 预览行数（需求：仅展示前 10 条）
 PREVIEW_ROWS = 10
@@ -87,8 +98,8 @@ st.set_page_config(
 )
 
 # 侧栏与主区标题通用样式（功能栏图标卡片 + 标题区背景图）
-SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "🧹 数据清洗"]
-SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "数据清洗"]
+SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "📊 电量表多表合并", "🧹 数据清洗"]
+SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "电量表多表合并", "数据清洗"]
 
 def _sidebar_display_to_value(display: str) -> str:
     for i, d in enumerate(SIDEBAR_OPTIONS_DISPLAY):
@@ -150,6 +161,7 @@ else:
         st.session_state.main_view = "merge"
 
 is_pile = st.session_state.merge_mode == "公共桩多表合并"
+is_energy = st.session_state.merge_mode == "电量表多表合并"
 is_clean_view = st.session_state.main_view in ("clean_upload", "clean_after_merge")
 
 # ---------- 数据清洗页（双入口共用同一套 UI） ----------
@@ -282,8 +294,16 @@ if is_clean_view:
             st.dataframe(df_cleaned.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
             st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(df_cleaned):,} 行。")
             _export_date = date.today().strftime("%Y%m%d")
-            _name_xlsx = f"已清洗_{_export_date}.xlsx"
-            _name_csv = f"已清洗_{_export_date}.csv"
+            _default_name = f"已清洗_{_export_date}"
+            _export_name = st.text_input(
+                "导出文件名（可修改，不含扩展名）",
+                value=_default_name,
+                key="clean_export_filename",
+                help="修改后点击下方「下载 Excel」或「下载 CSV」即可导出。",
+            )
+            _base = (_export_name.strip() or _default_name).replace("\\", "_").replace("/", "_").replace(":", "_")
+            _name_xlsx = f"{_base}.xlsx"
+            _name_csv = f"{_base}.csv"
             d1, d2 = st.columns(2)
             with d1:
                 buf = BytesIO()
@@ -327,6 +347,167 @@ if is_clean_view:
             st.info("👆 请上传一个 Excel 或 CSV 文件。")
             with st.expander("📋 清洗规则说明"):
                 st.markdown("详见《数据清洗规则》文档（`数据清洗规则.md`）。")
+    st.stop()
+
+# ---------- 电量表多表合并页 ----------
+if is_energy:
+    st.markdown("""
+    <div class="header-banner">
+      <div class="header-inner">
+        <span class="header-icon">📊</span>
+        <h1 class="header-title">电量表多表合并</h1>
+      </div>
+      <p class="header-caption">上传多个电量表 Excel/CSV，支持仅合并（纵向拼接）或按省级行政区域合并汇总。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    energy_upload = st.file_uploader(
+        "选择要合并的 Excel 或 CSV 文件（可多选）",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+        key="energy_table_merge_upload",
+        help="支持 .xlsx / .xls / .csv；表头将自动识别「省级行政区域名称」或「月度充电电量」。",
+    )
+    if energy_upload:
+        st.markdown("#### 📁 已选文件")
+        file_list = []
+        for i, f in enumerate(energy_upload, 1):
+            size_mb = f.size / (1024 * 1024)
+            file_list.append({"序号": i, "文件名": f.name, "大小 (MB)": f"{size_mb:.2f}"})
+        st.dataframe(pd.DataFrame(file_list), use_container_width=True, hide_index=True)
+        col_only, col_agg = st.columns(2)
+        with col_only:
+            do_merge_only = st.button("仅合并", type="primary", key="energy_do_merge_only", use_container_width=True)
+        with col_agg:
+            do_merge_agg = st.button("合并汇总", type="primary", key="energy_do_merge_aggregate", use_container_width=True)
+        if do_merge_only:
+            files = [(f.name, f.getvalue()) for f in energy_upload]
+            with st.spinner("正在仅合并..."):
+                try:
+                    merged_df, success_list, error_list, row_counts = energy_merge_only(files)
+                    if merged_df is not None:
+                        st.session_state.merge_result_df = merged_df
+                        st.session_state.merge_result_success_list = success_list
+                        st.session_state.merge_result_error_list = error_list or []
+                        st.session_state.merge_result_row_counts = row_counts or []
+                        st.session_state.merge_result_mode = "energy"
+                        st.session_state.merge_result_energy_type = "only"
+                        st.rerun()
+                    else:
+                        st.error("没有可合并的数据。")
+                        if error_list:
+                            _show_error_table(error_list)
+                except Exception as e:
+                    st.error(f"合并失败：{e}")
+                    import traceback
+                    with st.expander("错误详情", expanded=False):
+                        st.code(traceback.format_exc())
+        if do_merge_agg:
+            files = [(f.name, f.getvalue()) for f in energy_upload]
+            with st.spinner("正在合并汇总..."):
+                try:
+                    merged_df, success_list, error_list, row_counts = energy_merge_aggregate(files)
+                    if merged_df is not None:
+                        st.session_state.merge_result_df = merged_df
+                        st.session_state.merge_result_success_list = success_list
+                        st.session_state.merge_result_error_list = error_list or []
+                        st.session_state.merge_result_row_counts = row_counts or []
+                        st.session_state.merge_result_mode = "energy"
+                        st.session_state.merge_result_energy_type = "aggregate"
+                        st.rerun()
+                    else:
+                        st.error("没有可合并的数据。")
+                        if error_list:
+                            _show_error_table(error_list)
+                except Exception as e:
+                    st.error(f"合并汇总失败：{e}")
+                    import traceback
+                    with st.expander("错误详情", expanded=False):
+                        st.code(traceback.format_exc())
+
+    # 电量表结果区
+    has_energy_result = (
+        st.session_state.get("merge_result_mode") == "energy"
+        and "merge_result_df" in st.session_state
+        and st.session_state.merge_result_df is not None
+    )
+    if has_energy_result:
+        merged_df = st.session_state.merge_result_df
+        success_list = st.session_state.get("merge_result_success_list", [])
+        error_list = st.session_state.get("merge_result_error_list", [])
+        row_counts = st.session_state.get("merge_result_row_counts", [])
+        energy_type = st.session_state.get("merge_result_energy_type", "only")
+        st.success("合并完成（仅合并）" if energy_type == "only" else "合并汇总完成")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("合并表行数", f"{len(merged_df):,}")
+        with m2:
+            st.metric("合并成功数", len(success_list))
+        with m3:
+            st.metric("未合并文件数", len(error_list), delta=None if not error_list else "见下方")
+        if row_counts:
+            st.markdown("**各表行数**")
+            st.dataframe(
+                pd.DataFrame(row_counts, columns=["文件名", "行数"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.markdown("#### 📥 导出")
+        _export_base = "电量表仅合并结果" if energy_type == "only" else "电量表合并汇总结果"
+        _export_date = date.today().strftime("%Y%m%d")
+        _default_name = f"{_export_base}_{_export_date}"
+        _export_name = st.text_input(
+            "导出文件名（可修改，不含扩展名）",
+            value=_default_name,
+            key="energy_export_filename",
+            help="修改后点击下方「下载 Excel」或「下载 CSV」即可导出。",
+        )
+        _base = (_export_name.strip() or _default_name).replace("\\", "_").replace("/", "_").replace(":", "_")
+        _name_xlsx = f"{_base}.xlsx"
+        _name_csv = f"{_base}.csv"
+        c1, c2 = st.columns(2)
+        with c1:
+            buf = BytesIO()
+            merged_df.to_excel(buf, index=False, engine="openpyxl")
+            buf.seek(0)
+            st.download_button(
+                "下载 Excel",
+                data=buf.getvalue(),
+                file_name=_name_xlsx,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="energy_download_xlsx",
+            )
+        with c2:
+            buf_csv = BytesIO()
+            merged_df.to_csv(buf_csv, index=False, encoding="utf-8-sig")
+            buf_csv.seek(0)
+            st.download_button(
+                "下载 CSV",
+                data=buf_csv.getvalue(),
+                file_name=_name_csv,
+                mime="text/csv",
+                key="energy_download_csv",
+            )
+        if error_list:
+            st.markdown("---")
+            _show_error_table(error_list)
+        st.markdown("#### 📊 结果预览")
+        st.dataframe(merged_df.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
+        st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(merged_df):,} 行。")
+        with st.expander("📋 合并规则说明"):
+            st.markdown("""
+- **表头**：前 3 行中先出现「省级行政区域名称」或「月度充电电量」的行作为表头。
+- **Sheet**：仅一个有内容则用该 Sheet；多个则 sheet1/sheet2 形式用 sheet1，日期命名用最新日期，否则用第一个有内容的 Sheet。
+- **仅合并**：每表增加「文件名称」「运营商名称」及七个电量字段后纵向拼接。
+- **合并汇总**：同上增加字段后按省级行政区域名称加总（月度充电电量及七项电量字段求和）。
+- **运营商名称**：由文件名按运营商映射表识别，无匹配填「未识别」。
+            """)
+    elif energy_upload and not has_energy_result:
+        st.info("请点击「仅合并」或「合并汇总」执行合并。")
+    else:
+        st.info("👆 请选择至少一个 Excel 或 CSV 文件，然后点击「仅合并」或「合并汇总」。")
+        with st.expander("📋 合并规则说明"):
+            st.markdown("详见《电量表合并规则》文档（`电量表合并规则.md`）。")
     st.stop()
 
 # ---------- 合并页（公共桩 / 充电站） ----------
@@ -461,7 +642,16 @@ if merge_upload:
         st.markdown("#### 📥 导出")
         _export_base = "充电桩合并结果" if is_pile else "充电站合并结果"
         _export_date = date.today().strftime("%Y%m%d")
-        _name_csv = f"{_export_base}_{_export_date}.csv"
+        _default_name = f"{_export_base}_{_export_date}.csv"
+        _export_name = st.text_input(
+            "导出文件名（可修改）",
+            value=_default_name,
+            key="merge_large_export_filename",
+            help="修改后点击「下载合并结果 CSV」即可导出。",
+        )
+        _name_csv = (_export_name.strip() or _default_name).replace("\\", "_").replace("/", "_").replace(":", "_")
+        if not _name_csv.lower().endswith(".csv"):
+            _name_csv = _name_csv + ".csv"
         st.download_button(
             "下载合并结果 CSV",
             data=csv_bytes,
@@ -496,8 +686,16 @@ if merge_upload:
         st.markdown("#### 📥 导出")
         _export_base = "充电桩合并结果" if is_pile else "充电站合并结果"
         _export_date = date.today().strftime("%Y%m%d")
-        _name_xlsx = f"{_export_base}_{_export_date}.xlsx"
-        _name_csv = f"{_export_base}_{_export_date}.csv"
+        _default_name = f"{_export_base}_{_export_date}"
+        _export_name = st.text_input(
+            "导出文件名（可修改，不含扩展名）",
+            value=_default_name,
+            key=f"{key_prefix}merge_small_export_filename",
+            help="修改后点击下方「下载 Excel」或「下载 CSV」即可导出。",
+        )
+        _base = (_export_name.strip() or _default_name).replace("\\", "_").replace("/", "_").replace(":", "_")
+        _name_xlsx = f"{_base}.xlsx"
+        _name_csv = f"{_base}.csv"
         c1, c2 = st.columns(2)
         with c1:
             buf = BytesIO()
