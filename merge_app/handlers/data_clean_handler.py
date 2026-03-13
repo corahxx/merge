@@ -1,12 +1,14 @@
 # handlers/data_clean_handler.py - 充电数据清洗与标准化（规范 V2.0）
 
 import re
+import hashlib
 import pandas as pd
 from typing import Optional, Tuple, Dict, List, Any, Set, Iterable
 from datetime import datetime
 
 # 规则 ID（用于自定义清洗勾选与 applied_rules 报告）
 RULE_NULL_STD = "null_std"
+RULE_UID = "uid"
 RULE_SEQUENCE = "sequence"
 RULE_LOCATION = "location"
 RULE_DATE = "date"
@@ -19,9 +21,10 @@ RULE_PILE_OPEN_TIME = "pile_open_time"
 
 RULE_LABELS = {
     RULE_NULL_STD: "空值标准化",
-    RULE_SEQUENCE: "主键生成（序号）",
+    RULE_UID: "主键（uid，复合字段哈希）",
+    RULE_SEQUENCE: "序号列（从1递增）",
     RULE_LOCATION: "充电站位置截断（≤600字）",
-    RULE_DATE: "日期清洗（yyyy/mm/dd + 结果列）",
+    RULE_DATE: "日期清洗（yyyy-mm-dd + 结果列）",
     RULE_POWER: "功率→kW",
     RULE_VOLTAGE: "电压→V",
     RULE_CURRENT: "电流→A",
@@ -30,13 +33,18 @@ RULE_LABELS = {
     RULE_PILE_OPEN_TIME: "设备开通时间校验",
 }
 
+# 主键 uid：复合字段（按顺序），见《数据清洗规则》1.2
+UID_COLUMN = "uid"
+UID_KEY_STATION = ["充电站内部编号", "充电站名称"]
+UID_KEY_PILE = ["充电桩编号", "所属充电站编号", "充电站内部编号"]
+
 # 按表类型适用的规则（执行顺序）
 RULES_STATION = [
-    RULE_NULL_STD, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
+    RULE_NULL_STD, RULE_UID, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT, RULE_STATION_INNER_ID,
 ]
 RULES_PILE = [
-    RULE_NULL_STD, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
+    RULE_NULL_STD, RULE_UID, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT,
     RULE_PILE_DEVICE_TYPE, RULE_PILE_OPEN_TIME,
 ]
@@ -59,8 +67,10 @@ POWER_COLUMNS = [
 VOLTAGE_COLUMNS = ["额定电压上限", "额定电压下限"]
 # 电流相关列（A）
 CURRENT_COLUMNS = ["额定电流上限", "额定电流下限"]
-# 常见日期列
-DATE_LIKE_KEYWORDS = ("时间", "日期", "投入使用", "开通", "生产", "入库")
+# 日期清洗：适用列 = 以下固定字段 或 列名包含「时间」「日期」；排除列名为「服务时间」
+DATE_COLUMN_EXACT = ("充电站投入使用时间", "设备开通时间", "入库时间", "充电桩生产日期")
+DATE_LIKE_KEYWORDS = ("时间", "日期")
+DATE_EXCLUDE_COLUMN = "服务时间"
 LOCATION_MAX_LEN = 600
 STATION_INNER_ID_COL = "充电站内部编号"
 LOCATION_COL = "充电站位置"
@@ -91,8 +101,37 @@ def _standardize_nulls(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _ensure_uid_column(df: pd.DataFrame, table_type: str) -> pd.DataFrame:
+    """
+    按《数据清洗规则》1.2 生成主键列 uid：复合字段按顺序用 | 拼接后 MD5 十六进制。
+    充电站：充电站内部编号、充电站名称；充电桩：充电桩编号、所属充电站编号、充电站内部编号。
+    若某行参与复合的字段全为空，则用行号哈希避免重复。
+    """
+    df = df.copy()
+    key_cols = UID_KEY_STATION if table_type == "station" else UID_KEY_PILE
+    # 只使用表中存在的列，缺失列视为空字符串参与拼接
+    existing = [c for c in key_cols if c in df.columns]
+    uids = []
+    for i in range(len(df)):
+        parts = []
+        for c in existing:
+            v = df.iloc[i][c]
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                parts.append("")
+            else:
+                parts.append(str(v).strip())
+        raw = "|".join(parts)
+        if not raw or all(p == "" for p in parts):
+            raw = f"__row_{i}"
+        uids.append(hashlib.md5(raw.encode("utf-8")).hexdigest())
+    if UID_COLUMN in df.columns:
+        df = df.drop(columns=[UID_COLUMN])
+    df.insert(0, UID_COLUMN, uids)
+    return df
+
+
 def _ensure_sequence_column(df: pd.DataFrame) -> pd.DataFrame:
-    """生成从 1 递增的序号列，若已有则覆盖。"""
+    """生成从 1 递增的序号列，若已有则覆盖。仅作展示与行号，不作为主键。"""
     df = df.copy()
     if "序号" in df.columns:
         df = df.drop(columns=["序号"])
@@ -113,57 +152,93 @@ def _truncate_location(df: pd.DataFrame) -> pd.DataFrame:
 
 def _parse_date_to_ymd(val: Any) -> Tuple[Optional[str], bool]:
     """
-    尝试将单个值解析为 yyyy/mm/dd。缺失日补 1。
+    尝试将单个值解析为 yyyy-mm-dd（YMD，不含时分秒）。缺失日补 1。
     返回 (标准化日期字符串 或 None, 是否解析成功)。
+    支持：中文(2023年8月29日)、斜杠(2023/3/11)、紧凑(20200920)、标准横杠、美式(10 13 2022 12:00AM)等。
     """
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return None, False
     s = str(val).strip()
     if not s or s.lower() in ("null", "nan", ""):
         return None, False
-    # 已有 yyyy/mm/dd
-    if re.match(r"^\d{4}/\d{1,2}/\d{1,2}$", s):
-        parts = s.split("/")
-        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-        if 1 <= m <= 12 and 1 <= d <= 31:
-            return f"{y:04d}/{m:02d}/{d:02d}", True
-    # 12 21 2022 12:00AM 等
-    m = re.match(r"^\s*(\d{1,2})\s+(\d{1,2})\s+(\d{4})", s)
+    # 中文：2023年8月29日、2023年08月29日
+    m = re.match(r"^(\d{4})年(\d{1,2})月(\d{1,2})日?$", s)
     if m:
         try:
-            month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if 1 <= month <= 12 and 1 <= day <= 31:
-                return f"{year:04d}/{month:02d}/{day:02d}", True
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= mo <= 12 and 1 <= d <= 31:
+                return f"{y:04d}-{mo:02d}-{d:02d}", True
         except (ValueError, IndexError):
             pass
-    # 2025-03 或 2025-03-01 或 2016-12-22 12:37:30
-    m = re.match(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?", s)
+    # 斜杠：2023/3/11、2023/03/11、2023/3、2023/8
+    if re.match(r"^\d{4}/\d{1,2}(?:/\d{1,2})?(?:\s|$)", s) or re.match(r"^\d{4}/\d{1,2}(?:/\d{1,2})?$", s):
+        parts = re.split(r"[/\s]+", s)[:3]
+        if len(parts) >= 2:
+            try:
+                y, mo = int(parts[0]), int(parts[1])
+                d = int(parts[2]) if len(parts) > 2 else 1
+                if 1 <= mo <= 12 and 1 <= d <= 31:
+                    return f"{y:04d}-{mo:02d}-{d:02d}", True
+            except (ValueError, IndexError):
+                pass
+    # 紧凑数字：20200920
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", s)
+    if m:
+        try:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= mo <= 12 and 1 <= d <= 31:
+                return f"{y:04d}-{mo:02d}-{d:02d}", True
+        except (ValueError, IndexError):
+            pass
+    # 标准横杠：2021-03-03、2022-11-20 06:02:03、2025-03
+    m = re.match(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?(?:\s|$)", s)
     if m:
         try:
             y, mo = int(m.group(1)), int(m.group(2))
             d = int(m.group(3)) if m.group(3) else 1
             if 1 <= mo <= 12 and 1 <= d <= 31:
-                return f"{y:04d}/{mo:02d}/{d:02d}", True
+                return f"{y:04d}-{mo:02d}-{d:02d}", True
+        except (ValueError, IndexError):
+            pass
+    # 美式：10 13 2022 12:00AM、12 21 2022 12:00AM
+    m = re.match(r"^\s*(\d{1,2})\s+(\d{1,2})\s+(\d{4})", s)
+    if m:
+        try:
+            month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                return f"{year:04d}-{month:02d}-{day:02d}", True
         except (ValueError, IndexError):
             pass
     # pd.to_datetime 兜底
     try:
         dt = pd.to_datetime(s)
         if pd.notna(dt):
-            return dt.strftime("%Y/%m/%d"), True
+            return dt.strftime("%Y-%m-%d"), True
     except Exception:
         pass
     return None, False
 
 
+def _get_date_columns(df: pd.DataFrame) -> List[str]:
+    """适用日期清洗的列：固定字段 或 列名包含「时间」「日期」；排除「服务时间」。"""
+    cols = []
+    for c in df.columns:
+        c_str = str(c).strip()
+        if c_str == DATE_EXCLUDE_COLUMN:
+            continue
+        if c_str in DATE_COLUMN_EXACT:
+            cols.append(c)
+            continue
+        if any(kw in c_str for kw in DATE_LIKE_KEYWORDS):
+            cols.append(c)
+    return cols
+
+
 def _apply_date_cleaning(
     df: pd.DataFrame, report: Dict[str, Any]
 ) -> pd.DataFrame:
-    """对所有日期相关列统一为 yyyy/mm/dd，并写日期清洗结果。"""
-    date_cols = [
-        c for c in df.columns
-        if any(kw in c for kw in DATE_LIKE_KEYWORDS)
-    ]
+    """对适用列统一为 yyyy-mm-dd（YMD），直接替换原值；无法识别的保留原值。可选写 xxx_日期清洗结果。"""
+    date_cols = _get_date_columns(df)
     if not date_cols:
         report["date_clean_success"] = 0
         report["date_clean_fail"] = 0
@@ -337,7 +412,7 @@ def _apply_pile_specific(
             out, ok = _parse_date_to_ymd(v)
             if ok and out:
                 try:
-                    dt = datetime.strptime(out, "%Y/%m/%d")
+                    dt = datetime.strptime(out, "%Y-%m-%d")
                     if dt > now:
                         anomaly_rows.append({"行号": i + 1, "序号": row.get("序号", i + 1), "设备开通时间": str(v)})
                 except ValueError:
@@ -381,6 +456,8 @@ def clean_dataframe(
         applied.append((rule_id, label))
         if rule_id == RULE_NULL_STD:
             df = _standardize_nulls(df)
+        elif rule_id == RULE_UID:
+            df = _ensure_uid_column(df, t)
         elif rule_id == RULE_SEQUENCE:
             df = _ensure_sequence_column(df)
         elif rule_id == RULE_LOCATION:
