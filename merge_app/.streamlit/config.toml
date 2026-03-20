@@ -1,5 +1,10 @@
 [server]
 headless = true
+maxUploadSize = 600
+maxMessageSize = 600
+enableXsrfProtection = false
+enableCORS = false
+websocketPingInterval = 30
 
 [browser]
 gatherUsageStats = false

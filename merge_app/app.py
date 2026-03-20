@@ -23,6 +23,8 @@ _station_mod = _load_handler("station_merge_handler", "station_merge_handler.py"
 _clean_mod = _load_handler("data_clean_handler", "data_clean_handler.py")
 _energy_mod = _load_handler("energy_merge_handler", "energy_merge_handler.py")
 _generic_mod = _load_handler("generic_merge_handler", "generic_merge_handler.py")
+_csv_mod = _load_handler("csv_convert_handler", "csv_convert_handler.py")
+_pivot_mod = _load_handler("pivot_handler", "pivot_handler.py")
 
 def pile_merge_files(files, engine="openpyxl"):
     if _pile_mod is None:
@@ -74,6 +76,98 @@ def generic_run_validation(df, rules):
         return []
     return _generic_mod.run_validation(df, rules)
 
+def csv_convert_excel(file_bytes: bytes, filename: str):
+    """多 Sheet Excel 合并为单表，返回 (df, error, stats)。"""
+    if _csv_mod is None or not hasattr(_csv_mod, "excel_sheets_to_csv"):
+        return None, "CSV格式转换模块加载失败", None
+    return _csv_mod.excel_sheets_to_csv(file_bytes, filename)
+
+
+def csv_convert_by_path(input_path: str):
+    """按本地路径读取 Excel 并合并为 CSV 保存到同目录，返回 (output_path, error, stats)。"""
+    if _csv_mod is None or not hasattr(_csv_mod, "excel_path_to_csv"):
+        return None, "CSV格式转换模块加载失败", None
+    return _csv_mod.excel_path_to_csv(input_path)
+
+
+def csv_convert_parse_paths(multiline_text: str):
+    """多行路径字符串解析为路径列表。"""
+    if _csv_mod is None or not hasattr(_csv_mod, "parse_paths_from_multiline"):
+        return []
+    return _csv_mod.parse_paths_from_multiline(multiline_text or "")
+
+
+def csv_convert_paths_to_single(paths: list):
+    """多表合并为一个 CSV，返回 (output_path, error, stats)。"""
+    if _csv_mod is None or not hasattr(_csv_mod, "excel_paths_to_single_csv"):
+        return None, "CSV格式转换模块加载失败", None
+    return _csv_mod.excel_paths_to_single_csv(paths)
+
+
+def csv_convert_paths_to_separate(paths: list):
+    """多表分别转化为 CSV，返回 List[(output_path, error, stats)]。"""
+    if _csv_mod is None or not hasattr(_csv_mod, "excel_paths_to_separate_csvs"):
+        return []
+    return _csv_mod.excel_paths_to_separate_csvs(paths)
+
+
+def pivot_get_numeric_columns(df):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "get_numeric_columns"):
+        return []
+    return _pivot_mod.get_numeric_columns(df)
+
+
+def pivot_build_table(df, index_cols, columns_cols, values_aggs):
+    """values_aggs: List[(value_col, agg_name)]。返回 (result_df, error)。"""
+    if _pivot_mod is None or not hasattr(_pivot_mod, "build_pivot_table"):
+        return None, "数据透视表模块加载失败"
+    return _pivot_mod.build_pivot_table(df, index_cols, columns_cols, values_aggs)
+
+
+def pivot_filter_dataframe(df, filter_col=None, selected_values=None, where_expr=None):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "filter_dataframe"):
+        return None, "数据透视表模块加载失败"
+    return _pivot_mod.filter_dataframe(df, filter_col, selected_values, where_expr)
+
+
+def pivot_get_distinct_values(df, column, limit=10000):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "get_distinct_values"):
+        return None, "数据透视表模块加载失败"
+    return _pivot_mod.get_distinct_values(df, column, limit)
+
+
+def pivot_get_db_columns(db_type, host, port, user, password, database, table, schema=None):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "get_db_columns"):
+        return None, "数据透视表模块加载失败"
+    return _pivot_mod.get_db_columns(db_type, host, port, user, password, database, table, schema)
+
+
+def pivot_get_db_distinct(db_type, host, port, user, password, database, table, column, limit=10000, schema=None):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "get_db_distinct_values"):
+        return None, "数据透视表模块加载失败"
+    return _pivot_mod.get_db_distinct_values(
+        db_type, host, port, user, password, database, table, column, limit, schema
+    )
+
+
+def pivot_build_from_db(db_type, host, port, user, password, database, table, index_cols, columns_cols, values_aggs, where_clause=None, schema=None):
+    if _pivot_mod is None or not hasattr(_pivot_mod, "build_pivot_from_db"):
+        return None, "数据透视表模块未支持数据库"
+    return _pivot_mod.build_pivot_from_db(
+        db_type, host, port, user, password, database, table,
+        index_cols, columns_cols, values_aggs, where_clause, schema
+    )
+
+
+def pivot_load_table_from_db(db_type, host, port, user, password, database, table, schema=None, limit=1_000_000):
+    """从数据库表加载数据为 DataFrame，供数据清洗等使用。"""
+    if _pivot_mod is None or not hasattr(_pivot_mod, "load_table_from_db"):
+        return None, "数据透视表模块未支持"
+    return _pivot_mod.load_table_from_db(
+        db_type, host, port, user, password, database, table, schema, limit
+    )
+
+
 # 预览行数（需求：仅展示前 10 条）
 PREVIEW_ROWS = 10
 
@@ -119,8 +213,8 @@ st.set_page_config(
 )
 
 # 侧栏与主区标题通用样式（功能栏图标卡片 + 标题区背景图）
-SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "📊 电量表多表合并", "📑 合并汇总其他类型表格", "🧹 数据清洗"]
-SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "电量表多表合并", "合并汇总其他类型表格", "数据清洗"]
+SIDEBAR_OPTIONS_DISPLAY = ["🔌 公共桩多表合并", "⚡ 充电站多表合并", "📊 电量表多表合并", "📑 合并汇总其他类型表格", "📄 CSV格式转换", "📊 数据透视表", "🧹 数据清洗"]
+SIDEBAR_OPTIONS_VALUE = ["公共桩多表合并", "充电站多表合并", "电量表多表合并", "合并汇总其他类型表格", "CSV格式转换", "数据透视表", "数据清洗"]
 
 def _sidebar_display_to_value(display: str) -> str:
     for i, d in enumerate(SIDEBAR_OPTIONS_DISPLAY):
@@ -184,6 +278,8 @@ else:
 is_pile = st.session_state.merge_mode == "公共桩多表合并"
 is_energy = st.session_state.merge_mode == "电量表多表合并"
 is_generic = st.session_state.merge_mode == "合并汇总其他类型表格"
+is_csv_convert = st.session_state.merge_mode == "CSV格式转换"
+is_pivot = st.session_state.merge_mode == "数据透视表"
 is_clean_view = st.session_state.main_view in ("clean_upload", "clean_after_merge")
 
 # ---------- 数据清洗页（双入口共用同一套 UI） ----------
@@ -198,15 +294,21 @@ if is_clean_view:
     </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
-    df_for_clean = None
-    if st.session_state.main_view == "clean_after_merge":
-        df_for_clean = st.session_state.get("df_for_clean")
-    if df_for_clean is not None:
-        st.caption("当前使用合并结果表或上传表进行清洗。")
-        # 数据类型下拉：充电站数据 / 充电桩数据
+    df_for_clean = st.session_state.get("df_for_clean") if st.session_state.main_view == "clean_after_merge" else None
+    clean_source_from_path = st.session_state.get("clean_source_from_path", False)
+    clean_source_paths = list(st.session_state.get("clean_source_paths") or [])
+    if not clean_source_paths and st.session_state.get("clean_source_path"):
+        clean_source_paths = [st.session_state.get("clean_source_path")]
+    has_path_source = clean_source_from_path and len(clean_source_paths) > 0
+    if df_for_clean is not None or has_path_source:
+        st.caption("当前使用合并结果表、上传表或文件链接进行清洗。" if clean_source_from_path else "当前使用合并结果表或上传表进行清洗。")
+        # 数据类型下拉：充电站数据 / 充电桩数据（仅在有 df 时自动检测）
         if "clean_table_type" not in st.session_state:
-            _detected = _clean_mod._detect_table_type(df_for_clean) if _clean_mod else "station"
-            st.session_state.clean_table_type = _detected
+            if df_for_clean is not None and _clean_mod:
+                _detected = _clean_mod._detect_table_type(df_for_clean)
+                st.session_state.clean_table_type = _detected
+            else:
+                st.session_state.clean_table_type = "station"
         if "panel_custom_clean_open" not in st.session_state:
             st.session_state.panel_custom_clean_open = False
         st.caption("请先选择数据类型（充电站表 或 充电桩表），再执行一键清洗或自定义清洗。")
@@ -229,9 +331,42 @@ if is_clean_view:
             st.session_state.pop("panel_custom_clean_open", None)
         clean_table_type = st.session_state.clean_table_type
 
-        st.markdown("#### 待清洗数据预览")
-        st.dataframe(df_for_clean.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
-        st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(df_for_clean):,} 行。")
+        if df_for_clean is not None:
+            st.markdown("#### 待清洗数据预览")
+            st.dataframe(df_for_clean.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
+            st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(df_for_clean):,} 行。")
+        elif has_path_source:
+            st.markdown("#### 数据来源")
+            n_paths = len(clean_source_paths)
+            st.caption(f"已配置 **{n_paths}** 个文件链接（换行分隔），将依次按当前规则清洗，每个结果保存到该文件所在文件夹。")
+            if n_paths > 0:
+                with st.expander("查看路径列表", expanded=False):
+                    for i, p in enumerate(clean_source_paths[:10], 1):
+                        st.text(p)
+                    if n_paths > 10:
+                        st.caption(f"… 共 {n_paths} 个")
+        _path_done = st.session_state.pop("clean_path_done_msg", None)
+        _batch_result = st.session_state.get("clean_path_batch_result")
+        if _path_done:
+            if _batch_result and len(_batch_result.get("fail", [])) > 0 and len(_batch_result.get("success", [])) == 0:
+                st.warning(_path_done)
+            else:
+                st.success(_path_done)
+        if _batch_result:
+            _s, _f = _batch_result.get("success", []), _batch_result.get("fail", [])
+            if len(_f) > 0:
+                with st.expander("⚠️ 失败文件列表", expanded=True):
+                    for x in _f:
+                        st.text(f"{x.get('path', '')} — {x.get('err', '')}")
+            if len(_s) > 0 and len(_s) <= 20:
+                with st.expander("✅ 成功保存路径", expanded=False):
+                    for x in _s:
+                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {x.get('out_xlsx', '')}")
+            elif len(_s) > 20:
+                with st.expander("✅ 成功保存路径（前 20 个）", expanded=False):
+                    for x in _s[:20]:
+                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {x.get('out_xlsx', '')}")
+                    st.caption(f"… 共 {len(_s)} 个")
         if _clean_mod is None:
             st.error("清洗模块加载失败，请检查 handlers/data_clean_handler.py 是否存在。")
         else:
@@ -242,34 +377,147 @@ if is_clean_view:
             with col_btn2:
                 show_custom = st.button("自定义清洗", key="btn_show_custom_clean", use_container_width=True)
             if do_clean:
-                with st.spinner("正在按规范 V2.0 一键清洗..."):
-                    try:
-                        cleaned_df, report = _clean_mod.clean_dataframe(df_for_clean, table_type=clean_table_type)
-                        st.session_state.df_cleaned = cleaned_df
-                        st.session_state.clean_report = report
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"清洗失败：{e}")
-                        import traceback
-                        with st.expander("错误详情"):
-                            st.code(traceback.format_exc())
+                if has_path_source and df_for_clean is None:
+                    _success, _fail = [], []
+                    _last_df, _last_report = None, None
+                    _n = len(clean_source_paths)
+                    with st.spinner(f"正在依次清洗（共 {_n} 个文件）…" if _n > 1 else "正在清洗中..."):
+                        for _idx, _path in enumerate(clean_source_paths):
+                            try:
+                                _low = _path.lower()
+                                if _low.endswith(".csv"):
+                                    try:
+                                        _work_df = pd.read_csv(_path, encoding="utf-8-sig")
+                                    except Exception:
+                                        _work_df = pd.read_csv(_path, encoding="gbk")
+                                elif _low.endswith(".xlsx") or _low.endswith(".xls"):
+                                    _work_df = pd.read_excel(_path, sheet_name=0, engine="openpyxl" if _low.endswith(".xlsx") else "xlrd")
+                                else:
+                                    _work_df = None
+                                if _work_df is None or _work_df.empty:
+                                    _fail.append({"path": _path, "err": "表格为空或无法解析"})
+                                    continue
+                                cleaned_df, report = _clean_mod.clean_dataframe(_work_df, table_type=clean_table_type)
+                                _dir = os.path.dirname(_path)
+                                _base = os.path.splitext(os.path.basename(_path))[0]
+                                out_csv = os.path.join(_dir, f"{_base}_已清洗.csv")
+                                out_xlsx = os.path.join(_dir, f"{_base}_已清洗.xlsx")
+                                cleaned_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
+                                cleaned_df.to_excel(out_xlsx, index=False, engine="openpyxl")
+                                _success.append({"path": _path, "out_csv": out_csv, "out_xlsx": out_xlsx})
+                                _last_df, _last_report = cleaned_df, report
+                            except Exception as e:
+                                _fail.append({"path": _path, "err": str(e)})
+                    st.session_state.df_cleaned = _last_df
+                    st.session_state.clean_report = _last_report
+                    st.session_state.clean_path_batch_result = {"success": _success, "fail": _fail}
+                    if _n == 1 and _success:
+                        st.session_state.clean_path_done_msg = f"结果已保存到：{_success[0]['out_csv']}，{_success[0]['out_xlsx']}"
+                    elif _n == 1 and _fail:
+                        st.session_state.clean_path_done_msg = "该文件清洗失败，请查看下方失败列表。"
+                    else:
+                        st.session_state.clean_path_done_msg = f"共 {_n} 个文件，成功 {len(_success)} 个，失败 {len(_fail)} 个。"
+                    st.rerun()
+                elif df_for_clean is not None:
+                    with st.spinner("正在清洗中..."):
+                        try:
+                            cleaned_df, report = _clean_mod.clean_dataframe(df_for_clean, table_type=clean_table_type)
+                            st.session_state.df_cleaned = cleaned_df
+                            st.session_state.clean_report = report
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"清洗失败：{e}")
+                            import traceback
+                            with st.expander("错误详情"):
+                                st.code(traceback.format_exc())
             if show_custom:
                 st.session_state.panel_custom_clean_open = True
             if st.session_state.get("panel_custom_clean_open", False):
                 st.markdown("##### 选择要执行的清洗规则")
                 rule_ids_selected = []
+                _RULE_SEQ = getattr(_clean_mod, "RULE_SEQUENCE", "sequence")
                 for rid, label in rules_for_type:
-                    if st.checkbox(label, key=f"clean_rule_{rid}", value=True):
-                        rule_ids_selected.append(rid)
+                    if rid == _RULE_SEQ and clean_table_type == "pile":
+                        _c1, _c2 = st.columns([0.58, 0.42])
+                        with _c1:
+                            if st.checkbox(label, key=f"clean_rule_{rid}", value=True):
+                                rule_ids_selected.append(rid)
+                        with _c2:
+                            st.number_input(
+                                "序号起始",
+                                min_value=1,
+                                value=1,
+                                step=1,
+                                key="clean_sequence_start",
+                                help="勾选「序号列」时从该值递增（如 10→10,11,12…）；仅勾选 uid 且表内无数号时，uid 也会用该值自动补序号。",
+                            )
+                    else:
+                        if st.checkbox(label, key=f"clean_rule_{rid}", value=True):
+                            rule_ids_selected.append(rid)
                 do_custom = st.button("执行自定义清洗", type="primary", key="do_custom_clean", use_container_width=False)
                 if do_custom:
+                    _pile_seq_start = (
+                        int(st.session_state.get("clean_sequence_start", 1))
+                        if clean_table_type == "pile"
+                        else 1
+                    )
                     if not rule_ids_selected:
                         st.warning("请至少勾选一项清洗规则。")
+                    elif has_path_source and df_for_clean is None:
+                        _success, _fail = [], []
+                        _last_df, _last_report = None, None
+                        _n = len(clean_source_paths)
+                        with st.spinner("正在依次清洗…" if _n > 1 else "正在清洗中..."):
+                            for _idx, _path in enumerate(clean_source_paths):
+                                try:
+                                    _low = _path.lower()
+                                    if _low.endswith(".csv"):
+                                        try:
+                                            _work_df = pd.read_csv(_path, encoding="utf-8-sig")
+                                        except Exception:
+                                            _work_df = pd.read_csv(_path, encoding="gbk")
+                                    elif _low.endswith(".xlsx") or _low.endswith(".xls"):
+                                        _work_df = pd.read_excel(_path, sheet_name=0, engine="openpyxl" if _low.endswith(".xlsx") else "xlrd")
+                                    else:
+                                        _work_df = None
+                                    if _work_df is None or _work_df.empty:
+                                        _fail.append({"path": _path, "err": "表格为空或无法解析"})
+                                        continue
+                                    cleaned_df, report = _clean_mod.clean_dataframe(
+                                        _work_df,
+                                        table_type=clean_table_type,
+                                        rules_to_apply=rule_ids_selected,
+                                        sequence_start=_pile_seq_start,
+                                    )
+                                    _dir = os.path.dirname(_path)
+                                    _base = os.path.splitext(os.path.basename(_path))[0]
+                                    out_csv = os.path.join(_dir, f"{_base}_已清洗.csv")
+                                    out_xlsx = os.path.join(_dir, f"{_base}_已清洗.xlsx")
+                                    cleaned_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
+                                    cleaned_df.to_excel(out_xlsx, index=False, engine="openpyxl")
+                                    _success.append({"path": _path, "out_csv": out_csv, "out_xlsx": out_xlsx})
+                                    _last_df, _last_report = cleaned_df, report
+                                except Exception as e:
+                                    _fail.append({"path": _path, "err": str(e)})
+                        st.session_state.df_cleaned = _last_df
+                        st.session_state.clean_report = _last_report
+                        st.session_state.clean_path_batch_result = {"success": _success, "fail": _fail}
+                        if _n == 1 and _success:
+                            st.session_state.clean_path_done_msg = f"结果已保存到：{_success[0]['out_csv']}，{_success[0]['out_xlsx']}"
+                        elif _n == 1 and _fail:
+                            st.session_state.clean_path_done_msg = "该文件清洗失败，请查看下方失败列表。"
+                        else:
+                            st.session_state.clean_path_done_msg = f"共 {_n} 个文件，成功 {len(_success)} 个，失败 {len(_fail)} 个。"
+                        st.session_state.panel_custom_clean_open = False
+                        st.rerun()
                     else:
-                        with st.spinner("正在按所选规则清洗..."):
+                        with st.spinner("正在清洗中..."):
                             try:
                                 cleaned_df, report = _clean_mod.clean_dataframe(
-                                    df_for_clean, table_type=clean_table_type, rules_to_apply=rule_ids_selected
+                                    df_for_clean,
+                                    table_type=clean_table_type,
+                                    rules_to_apply=rule_ids_selected,
+                                    sequence_start=_pile_seq_start,
                                 )
                                 st.session_state.df_cleaned = cleaned_df
                                 st.session_state.clean_report = report
@@ -312,6 +560,27 @@ if is_clean_view:
             if anomaly:
                 with st.expander("⚠️ 设备开通时间异常（晚于当前时间）", expanded=False):
                     st.dataframe(pd.DataFrame(anomaly), use_container_width=True, hide_index=True)
+            psql_added = clean_report.get("psql_added_columns", [])
+            if psql_added:
+                with st.expander("根据 psql 新增字段", expanded=False):
+                    st.caption("本次新增列（取值为空）：")
+                    st.write(", ".join(psql_added))
+            latlon_invalid = clean_report.get("latlon_invalid_rows", [])
+            latlon_count = clean_report.get("latlon_invalid_count", 0)
+            if latlon_count > 0:
+                with st.expander("⚠️ 经纬度不合理（已标记为NULL）", expanded=False):
+                    st.caption(f"共 {latlon_count} 处异常；修正方式：标记为NULL。")
+                    st.dataframe(pd.DataFrame(latlon_invalid), use_container_width=True, hide_index=True)
+            phone_cleaned = clean_report.get("phone_cleaned_count", 0)
+            phone_examples = clean_report.get("phone_abnormal_examples", [])
+            if phone_cleaned > 0:
+                with st.expander("📞 联系电话过长/异常审查", expanded=False):
+                    st.caption(f"清洗行数：{phone_cleaned}；修正方式：仅保留数字与逗号、截断至50字或置空。")
+                    if phone_examples:
+                        st.caption("异常值示例：")
+                        st.write(", ".join(phone_examples[:15]))
+                        if len(phone_examples) > 15:
+                            st.caption(f"… 共 {len(phone_examples)} 条")
             st.markdown("#### 清洗后数据预览")
             st.dataframe(df_cleaned.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
             st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(df_cleaned):,} 行。")
@@ -337,36 +606,174 @@ if is_clean_view:
                 df_cleaned.to_csv(buf_csv, index=False, encoding="utf-8-sig")
                 buf_csv.seek(0)
                 st.download_button("下载清洗后 CSV", data=buf_csv.getvalue(), file_name=_name_csv, mime="text/csv", key="download_cleaned_csv")
+            clean_save_dir = st.session_state.get("clean_save_dir")
+            clean_source_basename = st.session_state.get("clean_source_basename")
+            if clean_save_dir and clean_source_basename:
+                st.markdown("#### 保存到链接所在文件夹")
+                st.caption("数据由「输入文件链接」加载时，可将清洗结果直接写入该路径所在文件夹。")
+                _saved_msg = st.session_state.get("clean_saved_to_path_msg")
+                if _saved_msg:
+                    st.success(_saved_msg)
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("保存 CSV 到链接文件夹", key="clean_save_csv_path"):
+                        out_csv = os.path.join(clean_save_dir, f"{clean_source_basename}_已清洗.csv")
+                        try:
+                            df_cleaned.to_csv(out_csv, index=False, encoding="utf-8-sig")
+                            st.session_state.clean_saved_to_path_msg = f"已保存：{out_csv}"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"保存失败：{e}")
+                with c2:
+                    if st.button("保存 Excel 到链接文件夹", key="clean_save_xlsx_path"):
+                        out_xlsx = os.path.join(clean_save_dir, f"{clean_source_basename}_已清洗.xlsx")
+                        try:
+                            df_cleaned.to_excel(out_xlsx, index=False, engine="openpyxl")
+                            st.session_state.clean_saved_to_path_msg = f"已保存：{out_xlsx}"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"保存失败：{e}")
         with st.expander("📋 清洗规则说明"):
             st.markdown("详见项目内《数据清洗规则》文档（`数据清洗规则.md`）。主要包含：通用空值/序号/位置截断、日期统一为 yyyy/mm/dd 与清洗结果标记、功率→kW/电压→V/电流→A、充电站内部编号缺失校验、充电桩设备类型标准化与设备开通时间校验。")
     else:
-        # clean_upload：先上传再清洗
-        st.caption("请上传 Excel 或 CSV，上传后将在此进行清洗。")
-        upload_clean = st.file_uploader(
-            "上传待清洗的表格",
-            type=["xlsx", "xls", "csv"],
-            accept_multiple_files=False,
-            key="clean_upload_file",
-            help="支持 .xlsx / .xls / .csv",
+        # clean_upload：选择数据导入方式后再加载
+        st.caption("请选择数据导入方式：直接导入（小量级）、连接数据库、或输入文件链接（清洗结果可保存到链接所在文件夹）。")
+        clean_import_mode = st.radio(
+            "数据导入方式",
+            options=["直接导入", "连接数据库", "输入文件链接"],
+            key="clean_import_mode",
+            horizontal=True,
+            help="直接导入：网页上传文件，适合小量数据。连接数据库：与数据透视表相同的连接方式。输入文件链接：填写本机路径，清洗后可直接保存到该路径所在文件夹。",
         )
-        if upload_clean is not None:
-            try:
-                if upload_clean.name.lower().endswith(".csv"):
-                    df_upload = pd.read_csv(upload_clean, encoding="utf-8-sig")
+        df_loaded = None
+        upload_clean = None
+        if clean_import_mode == "直接导入":
+            st.caption("适合小量级数据，上传后在此进行清洗。")
+            upload_clean = st.file_uploader(
+                "上传待清洗的表格",
+                type=["xlsx", "xls", "csv"],
+                accept_multiple_files=False,
+                key="clean_upload_file",
+                help="支持 .xlsx / .xls / .csv",
+            )
+            if upload_clean is not None:
+                try:
+                    if upload_clean.name.lower().endswith(".csv"):
+                        try:
+                            df_loaded = pd.read_csv(BytesIO(upload_clean.getvalue()), encoding="utf-8-sig")
+                        except Exception:
+                            df_loaded = pd.read_csv(BytesIO(upload_clean.getvalue()), encoding="gbk")
+                    else:
+                        df_loaded = pd.read_excel(BytesIO(upload_clean.getvalue()), engine="openpyxl" if upload_clean.name.lower().endswith(".xlsx") else "xlrd")
+                    if df_loaded is not None and not df_loaded.empty:
+                        st.session_state.pop("clean_save_dir", None)
+                        st.session_state.pop("clean_source_basename", None)
+                        st.session_state.pop("clean_source_path", None)
+                        st.session_state.pop("clean_source_paths", None)
+                        st.session_state.pop("clean_source_from_path", None)
+                        st.session_state.df_for_clean = df_loaded
+                        st.session_state.pop("df_cleaned", None)
+                        st.session_state.pop("clean_report", None)
+                        st.session_state.main_view = "clean_after_merge"
+                        st.rerun()
+                    else:
+                        df_loaded = None
+                        st.warning("表格为空或无法解析。")
+                except Exception as e:
+                    st.error(f"读取文件失败：{e}")
+            else:
+                st.info("👆 请上传一个 Excel 或 CSV 文件。")
+        elif clean_import_mode == "连接数据库":
+            st.caption("与数据透视表相同的连接设置；加载后在此进行清洗。大表将按「最大行数」限制拉取，避免超时。")
+            with st.expander("数据库连接", expanded=True):
+                _db_type_label = st.radio("数据库类型", ["MySQL", "PostgreSQL (psql)"], key="clean_db_type_radio", horizontal=True)
+                _db_type = "psql" if "PostgreSQL" in _db_type_label else "mysql"
+                _suffix = "_psql" if _db_type == "psql" else "_mysql"
+                _default_port = 5432 if _db_type == "psql" else 3306
+                if _db_type == "psql":
+                    _def_host, _def_user, _def_pass = "localhost", "postgres", "Admin2026"
+                    _def_db, _def_schema, _def_table = "evdata", "rowdata", "evdata_2512_row"
                 else:
-                    df_upload = pd.read_excel(upload_clean, engine="openpyxl")
-                if df_upload is not None and not df_upload.empty:
-                    st.session_state.df_for_clean = df_upload
-                    st.session_state.pop("df_cleaned", None)
-                    st.session_state.pop("clean_report", None)
-                    st.session_state.main_view = "clean_after_merge"
-                    st.rerun()
+                    _def_host = _def_user = _def_pass = _def_db = _def_schema = _def_table = ""
+                _port_key = "clean_db_port_psql" if _db_type == "psql" else "clean_db_port_mysql"
+                _host = st.text_input("主机", value=st.session_state.get("clean_db_host" + _suffix, _def_host), key="clean_db_host" + _suffix)
+                _port = st.number_input("端口", value=int(st.session_state.get(_port_key, _default_port)), min_value=1, max_value=65535, key=_port_key)
+                _user = st.text_input("用户名", value=st.session_state.get("clean_db_user" + _suffix, _def_user), key="clean_db_user" + _suffix)
+                _pass = st.text_input("密码", type="password", value=st.session_state.get("clean_db_pass" + _suffix, _def_pass), key="clean_db_pass" + _suffix)
+                _db_name = st.text_input("数据库名", value=st.session_state.get("clean_db_name" + _suffix, _def_db), key="clean_db_name" + _suffix)
+                if _db_type == "psql":
+                    _schema = st.text_input("Schema", value=st.session_state.get("clean_db_schema", _def_schema), key="clean_db_schema")
                 else:
-                    st.warning("表格为空或无法解析。")
-            except Exception as e:
-                st.error(f"读取文件失败：{e}")
+                    _schema = None
+                _table = st.text_input("表名", value=st.session_state.get("clean_db_table" + _suffix, _def_table), key="clean_db_table" + _suffix)
+                _limit = st.number_input("最大行数", value=int(st.session_state.get("clean_db_limit", 1_000_000)), min_value=1, max_value=10_000_000, key="clean_db_limit", help="为避免大表一次性拉取导致超时或内存不足，可限制行数。")
+            if st.button("加载数据", type="primary", key="clean_db_load"):
+                if not _host or not _user or not _db_name or not _table:
+                    st.warning("请填写主机、用户名、数据库名和表名。")
+                else:
+                    with st.spinner("正在从数据库加载..."):
+                        df_loaded, err = pivot_load_table_from_db(_db_type, _host, _port, _user, _pass, _db_name, _table, _schema, _limit)
+                        if err:
+                            st.error(err)
+                        elif df_loaded is not None and not df_loaded.empty:
+                            st.session_state.pop("clean_save_dir", None)
+                            st.session_state.pop("clean_source_basename", None)
+                            st.session_state.pop("clean_source_path", None)
+                            st.session_state.pop("clean_source_paths", None)
+                            st.session_state.pop("clean_source_from_path", None)
+                            st.session_state.df_for_clean = df_loaded
+                            st.session_state.pop("df_cleaned", None)
+                            st.session_state.pop("clean_report", None)
+                            st.session_state.main_view = "clean_after_merge"
+                            st.rerun()
+                        else:
+                            st.warning("未读取到数据或表为空。")
         else:
-            st.info("👆 请上传一个 Excel 或 CSV 文件。")
+            # 输入文件链接：多行，每行一个路径，换行分隔；全部校验通过后进入配置，依次清洗并保存到各文件所在文件夹
+            st.caption("每行一个本机 Excel/CSV 路径，将依次按相同规则清洗，每个结果保存到该文件所在文件夹。")
+            _path_input = st.text_area(
+                "文件路径（每行一个）",
+                value=st.session_state.get("clean_path_input", ""),
+                key="clean_path_input",
+                placeholder="每行一个文件路径，例如：\nC:\\data\\ev1.csv\nC:\\data\\ev2.xlsx\nD:\\export\\station.xlsx",
+                height=120,
+            )
+            if st.button("开始配置清洗", type="primary", key="clean_path_confirm"):
+                lines = [ln.strip().strip('"').strip("'") for ln in (_path_input or "").splitlines() if ln.strip()]
+                if not lines:
+                    st.warning("请输入至少一个文件路径（每行一个）。")
+                else:
+                    paths = [os.path.abspath(p) for p in lines]
+                    errors = []
+                    for i, p in enumerate(paths):
+                        if not os.path.isfile(p):
+                            errors.append(f"第 {i + 1} 行：文件不存在")
+                        else:
+                            low = p.lower()
+                            if not (low.endswith(".csv") or low.endswith(".xlsx") or (low.endswith(".xls") and not low.endswith(".xlsx"))):
+                                errors.append(f"第 {i + 1} 行：仅支持 .csv / .xlsx / .xls")
+                    if errors:
+                        for e in errors:
+                            st.error(e)
+                    else:
+                        st.session_state.clean_source_paths = paths
+                        st.session_state.clean_source_from_path = True
+                        st.session_state.pop("clean_source_path", None)
+                        st.session_state.pop("clean_save_dir", None)
+                        st.session_state.pop("clean_source_basename", None)
+                        st.session_state.pop("df_for_clean", None)
+                        st.session_state.pop("df_cleaned", None)
+                        st.session_state.pop("clean_report", None)
+                        st.session_state.pop("clean_path_batch_result", None)
+                        st.session_state.main_view = "clean_after_merge"
+                        st.rerun()
+        if clean_import_mode == "直接导入" and upload_clean is None:
+            with st.expander("📋 清洗规则说明"):
+                st.markdown("详见《数据清洗规则》文档（`数据清洗规则.md`）。")
+        elif clean_import_mode == "连接数据库":
+            with st.expander("📋 清洗规则说明"):
+                st.markdown("详见《数据清洗规则》文档（`数据清洗规则.md`）。")
+        elif clean_import_mode == "输入文件链接":
             with st.expander("📋 清洗规则说明"):
                 st.markdown("详见《数据清洗规则》文档（`数据清洗规则.md`）。")
     st.stop()
@@ -737,6 +1144,465 @@ if is_generic:
         st.info("👆 请选择至少一个 Excel 或 CSV 文件，再配置合并方向与字段。")
         with st.expander("📋 合并规则说明"):
             st.markdown("详见《其他类型表格合并规则》文档（`其他类型表格合并规则.md`）。")
+    st.stop()
+
+# ---------- CSV格式转换页 ----------
+if is_csv_convert:
+    st.markdown("""
+    <div class="header-banner">
+      <div class="header-inner">
+        <span class="header-icon">📄</span>
+        <h1 class="header-title">CSV格式转换</h1>
+      </div>
+      <p class="header-caption">上传一个多 Sheet 的 Excel，或输入本机路径；各 Sheet 首行表头一致，合并为一个 CSV 文件（UTF-8 编码）。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    csv_convert_mode = st.radio(
+        "选择方式",
+        options=["上传文件", "输入本地路径"],
+        index=0,
+        key="csv_convert_mode",
+        horizontal=True,
+    )
+    if csv_convert_mode == "输入本地路径":
+        st.caption("仅在本机运行时可使用；结果将保存到与源文件相同目录，文件名：原文件名_合并.csv")
+        csv_convert_scope = st.radio(
+            "转换范围",
+            options=["单表转换", "多表同时转换"],
+            index=0,
+            key="csv_convert_scope",
+            horizontal=True,
+        )
+        if csv_convert_scope == "单表转换":
+            csv_convert_path = st.text_input(
+                "Excel 文件路径",
+                value="",
+                placeholder=r"例如 C:\Users\...\xxx.xlsx",
+                key="csv_convert_path",
+            )
+            do_convert_path = st.button("一键转化", type="primary", key="csv_convert_do_path")
+            if do_convert_path and csv_convert_path.strip():
+                with st.spinner("正在合并各 Sheet，请稍候..."):
+                    try:
+                        output_path, err, stats = csv_convert_by_path(csv_convert_path.strip())
+                        if err:
+                            st.error(err)
+                        else:
+                            st.success(f"已保存到：{output_path}")
+                            if stats:
+                                m1, m2 = st.columns(2)
+                                with m1:
+                                    st.metric("合并后总行数", f"{stats.get('total_rows', 0):,}")
+                                with m2:
+                                    st.metric("合并的 Sheet 数", stats.get("sheet_count", 0))
+                                if stats.get("sheet_names") and stats.get("row_counts"):
+                                    with st.expander("各 Sheet 行数", expanded=False):
+                                        tbl = pd.DataFrame({"Sheet 名称": stats["sheet_names"], "行数": stats["row_counts"]})
+                                        st.dataframe(tbl, use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.error(f"转换失败：{e}")
+                        import traceback
+                        with st.expander("错误详情", expanded=False):
+                            st.code(traceback.format_exc())
+            elif do_convert_path and not csv_convert_path.strip():
+                st.warning("请输入 Excel 文件路径。")
+        else:
+            csv_convert_paths_text = st.text_area(
+                "Excel 文件路径（每行一个）",
+                value="",
+                placeholder=r"C:\path\a.xlsx" + "\n" + r"C:\path\b.xlsx",
+                key="csv_convert_paths",
+                height=120,
+            )
+            csv_multi_mode = st.radio(
+                "输出方式",
+                options=["多表转换为一个 CSV", "多表分别转化为 CSV"],
+                index=0,
+                key="csv_multi_mode",
+                horizontal=True,
+            )
+            do_convert_multi = st.button("一键转化", type="primary", key="csv_convert_do_multi")
+            if do_convert_multi:
+                paths = csv_convert_parse_paths(csv_convert_paths_text)
+                if not paths:
+                    st.warning("请至少输入一行有效的 .xlsx 或 .xls 文件路径。")
+                elif csv_multi_mode == "多表转换为一个 CSV":
+                    with st.spinner("正在合并多表为单个 CSV，请稍候..."):
+                        try:
+                            output_path, err, stats = csv_convert_paths_to_single(paths)
+                            if err:
+                                st.error(err)
+                            else:
+                                st.success(f"已保存到：{output_path}")
+                                if stats:
+                                    m1, m2 = st.columns(2)
+                                    with m1:
+                                        st.metric("合并后总行数", f"{stats.get('total_rows', 0):,}")
+                                    with m2:
+                                        st.metric("参与文件数", stats.get("file_count", 0))
+                        except Exception as e:
+                            st.error(f"转换失败：{e}")
+                            import traceback
+                            with st.expander("错误详情", expanded=False):
+                                st.code(traceback.format_exc())
+                else:
+                    with st.spinner("正在分别转换各表..."):
+                        try:
+                            results = csv_convert_paths_to_separate(paths)
+                            success = sum(1 for r in results if r[0] and not r[1])
+                            fail = len(results) - success
+                            st.metric("成功", success)
+                            if fail:
+                                st.metric("失败", fail)
+                            for i, (out_path, err, stats) in enumerate(results):
+                                path_display = paths[i] if i < len(paths) else ""
+                                if err:
+                                    st.error(f"【{path_display}】{err}")
+                                else:
+                                    st.success(f"【{path_display}】已保存到：{out_path}")
+                        except Exception as e:
+                            st.error(f"转换失败：{e}")
+                            import traceback
+                            with st.expander("错误详情", expanded=False):
+                                st.code(traceback.format_exc())
+    else:
+        csv_convert_upload = st.file_uploader(
+            "选择要转换的 Excel 文件（单文件）",
+            type=["xlsx", "xls"],
+            accept_multiple_files=False,
+            key="csv_convert_upload",
+            help="支持 .xlsx / .xls；每个 Sheet 第一行为标题行，且各 Sheet 表头完全一致。",
+        )
+        if csv_convert_upload:
+            f = csv_convert_upload
+            st.markdown("#### 📁 已选文件")
+            st.caption(f"**{f.name}**（{f.size / 1024:.1f} KB）")
+            do_convert = st.button("转换为 CSV", type="primary", key="csv_convert_do_convert")
+            if do_convert:
+                with st.spinner("正在合并各 Sheet..."):
+                    try:
+                        df, err, stats = csv_convert_excel(f.getvalue(), f.name)
+                        if err:
+                            st.error(err)
+                        elif df is not None:
+                            base_name = f.name.rsplit(".", 1)[0] if "." in f.name else f.name
+                            st.session_state.csv_convert_df = df
+                            st.session_state.csv_convert_stats = stats or {}
+                            st.session_state.csv_convert_filename = base_name
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"转换失败：{e}")
+                        import traceback
+                        with st.expander("错误详情", expanded=False):
+                            st.code(traceback.format_exc())
+
+        has_csv_result = (
+            "csv_convert_df" in st.session_state
+            and st.session_state.csv_convert_df is not None
+        )
+        if has_csv_result:
+            merged_df = st.session_state.csv_convert_df
+            stats = st.session_state.get("csv_convert_stats") or {}
+            base_name = st.session_state.get("csv_convert_filename", "合并结果")
+            st.success("转换完成")
+            m1, m2 = st.columns(2)
+            with m1:
+                st.metric("合并后总行数", f"{len(merged_df):,}")
+            with m2:
+                st.metric("合并的 Sheet 数", stats.get("sheet_count", 0))
+            if stats.get("sheet_names") and stats.get("row_counts"):
+                with st.expander("各 Sheet 行数", expanded=False):
+                    tbl = pd.DataFrame({"Sheet 名称": stats["sheet_names"], "行数": stats["row_counts"]})
+                    st.dataframe(tbl, use_container_width=True, hide_index=True)
+            st.markdown("#### 📥 下载 CSV（UTF-8）")
+            buf_csv = BytesIO()
+            merged_df.to_csv(buf_csv, index=False, encoding="utf-8")
+            buf_csv.seek(0)
+            st.download_button(
+                "下载 CSV",
+                data=buf_csv.getvalue(),
+                file_name=f"{base_name}.csv",
+                mime="text/csv; charset=utf-8",
+                key="csv_convert_download",
+            )
+            st.markdown("#### 📊 结果预览")
+            st.dataframe(merged_df.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
+            st.caption(f"仅展示前 {PREVIEW_ROWS} 行，共 {len(merged_df):,} 行。")
+        elif csv_convert_upload and not has_csv_result:
+            st.info("请点击「转换为 CSV」生成合并结果。")
+        else:
+            st.info("👆 请上传一个多 Sheet 的 Excel 文件（.xlsx 或 .xls）。")
+    st.stop()
+
+# ---------- 数据透视表页 ----------
+if is_pivot:
+    st.markdown("""
+    <div class="header-banner">
+      <div class="header-inner">
+        <span class="header-icon">📊</span>
+        <h1 class="header-title">数据透视表</h1>
+      </div>
+      <p class="header-caption">导入数据或连接数据库后自动识别字段，配置筛选、行/列/值及聚合，一次性设置完成后点击生成，仿 Excel 数据透视表。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    pivot_source = st.radio("数据来源", ["导入文件", "连接数据库"], key="pivot_source", horizontal=True)
+    cols = None
+    pivot_df = None
+    pivot_use_db = pivot_source == "连接数据库"
+
+    if pivot_use_db:
+        st.caption("先选择数据库类型，再填写连接信息，点击「获取表字段」后即可配置透视（不拉取全量数据，设置完成后点击「生成透视表」再执行）。")
+        with st.expander("数据库连接", expanded=True):
+            db_type_label = st.radio("数据库类型", ["MySQL", "PostgreSQL (psql)"], key="pivot_db_type_radio", horizontal=True)
+            db_type = "psql" if "PostgreSQL" in db_type_label else "mysql"
+            suffix = "_psql" if db_type == "psql" else "_mysql"
+            default_port = 5432 if db_type == "psql" else 3306
+            if db_type == "psql":
+                default_host, default_user, default_pass = "localhost", "postgres", "Admin2026"
+                default_dbname, default_schema, default_table = "evdata", "rowdata", "evdata_2512_row"
+            else:
+                default_host = default_user = default_pass = default_dbname = default_table = ""
+                default_schema = "public"
+            st.caption("MySQL 默认端口 3306，PostgreSQL 默认端口 5432。")
+            db_host = st.text_input("主机", value=st.session_state.get("pivot_db_host" + suffix, default_host), key="pivot_db_host" + suffix, placeholder="127.0.0.1 或 localhost")
+            db_port = st.number_input("端口", value=int(st.session_state.get("pivot_db_port" + suffix, default_port)), min_value=1, max_value=65535, key="pivot_db_port" + suffix)
+            db_user = st.text_input(
+                "用户名",
+                value=st.session_state.get("pivot_db_user" + suffix, default_user),
+                key="pivot_db_user" + suffix,
+                help="MySQL：安装时或创建用户时设定，常见为 root。PostgreSQL：安装时设定，本机一般为 postgres；云数据库或公司环境请向管理员索取或查看连接说明。",
+            )
+            db_pass = st.text_input("密码", type="password", value=st.session_state.get("pivot_db_pass" + suffix, default_pass), key="pivot_db_pass" + suffix)
+            db_name = st.text_input("数据库名", value=st.session_state.get("pivot_db_name" + suffix, default_dbname), key="pivot_db_name" + suffix)
+            if db_type == "psql":
+                db_schema = st.text_input("Schema", value=st.session_state.get("pivot_db_schema", default_schema), key="pivot_db_schema", help="PostgreSQL  schema，一般为 public")
+            else:
+                db_schema = None
+            db_table = st.text_input("表名", value=st.session_state.get("pivot_db_table" + suffix, default_table), key="pivot_db_table" + suffix)
+        if st.button("获取表字段", key="pivot_db_fetch_cols"):
+            if not db_host or not db_user or not db_name or not db_table:
+                st.warning("请填写主机、用户名、数据库名和表名。")
+            else:
+                with st.spinner("连接并读取表结构..."):
+                    col_list, err = pivot_get_db_columns(db_type, db_host, db_port, db_user, db_pass, db_name, db_table, db_schema)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state.pivot_db_columns = col_list
+                        st.session_state.pivot_db_config = {
+                            "db_type": db_type, "host": db_host, "port": db_port, "user": db_user, "password": db_pass,
+                            "database": db_name, "table": db_table, "schema": db_schema,
+                        }
+                        st.rerun()
+        if st.session_state.get("pivot_db_columns"):
+            cols = st.session_state.pivot_db_columns
+            st.success("已获取字段：%s" % ", ".join(str(c) for c in cols[:20]) + (" ..." if len(cols) > 20 else ""))
+    else:
+        st.caption("数据来源：导入文件（Excel/CSV）。大表建议行数在 100 万以内。")
+        pivot_upload = st.file_uploader(
+            "选择要透视的数据文件",
+            type=["xlsx", "xls", "csv"],
+            accept_multiple_files=False,
+            key="pivot_upload",
+            help="支持 .xlsx / .xls / .csv，首行为表头。",
+        )
+        if pivot_upload:
+            f = pivot_upload
+            if "pivot_source_df" not in st.session_state or st.session_state.get("pivot_source_filename") != f.name:
+                with st.spinner("正在读取数据..."):
+                    try:
+                        if f.name.lower().endswith(".csv"):
+                            try:
+                                df_up = pd.read_csv(BytesIO(f.getvalue()), encoding="utf-8-sig", nrows=1_000_000)
+                            except Exception:
+                                df_up = pd.read_csv(BytesIO(f.getvalue()), encoding="gbk", nrows=1_000_000)
+                        else:
+                            try:
+                                df_up = pd.read_excel(BytesIO(f.getvalue()), sheet_name=0, engine="openpyxl" if f.name.lower().endswith(".xlsx") else "xlrd", nrows=1_000_000)
+                            except TypeError:
+                                df_up = pd.read_excel(BytesIO(f.getvalue()), sheet_name=0, engine="openpyxl" if f.name.lower().endswith(".xlsx") else "xlrd")
+                                if len(df_up) > 1_000_000:
+                                    df_up = df_up.iloc[:1_000_000]
+                        if len(df_up) >= 1_000_000:
+                            st.warning("数据已截断为前 100 万行，超出部分未参与透视。")
+                        st.session_state.pivot_source_df = df_up
+                        st.session_state.pivot_source_filename = f.name
+                    except Exception as e:
+                        st.error(f"读取文件失败：{e}")
+                        import traceback
+                        with st.expander("错误详情", expanded=False):
+                            st.code(traceback.format_exc())
+            if st.session_state.get("pivot_source_df") is not None:
+                pivot_df = st.session_state.pivot_source_df
+                cols = list(pivot_df.columns.astype(str))
+                st.metric("已加载行数", f"{len(pivot_df):,}")
+                with st.expander("预览前 10 行", expanded=False):
+                    st.dataframe(pivot_df.head(PREVIEW_ROWS), use_container_width=True, hide_index=True)
+
+    if cols:
+        st.markdown("#### 字段列表（自动识别）")
+        st.caption("下方配置筛选、行/列/值，设置完成后点击「生成透视表」一次性执行。")
+        st.markdown("#### 筛选（可选）")
+        filter_mode = st.radio("筛选方式", ["不筛选", "按取值选择", "输入条件"], key="pivot_filter_mode", horizontal=True)
+        filter_col = None
+        filter_selected = None
+        filter_where = None
+        if filter_mode == "按取值选择":
+            filter_col = st.selectbox("筛选字段", options=cols, key="pivot_filter_col")
+            if st.button("获取该字段可选值", key="pivot_fetch_distinct"):
+                if pivot_use_db:
+                    cfg = st.session_state.get("pivot_db_config")
+                    if cfg:
+                        with st.spinner("查询去重值..."):
+                            vals, err = pivot_get_db_distinct(
+                                cfg.get("db_type", "mysql"), cfg["host"], cfg["port"], cfg["user"], cfg["password"],
+                                cfg["database"], cfg["table"], filter_col, schema=cfg.get("schema"),
+                            )
+                            if err:
+                                st.error(err)
+                            else:
+                                st.session_state.pivot_filter_options = vals
+                                st.rerun()
+                else:
+                    with st.spinner("获取去重值..."):
+                        vals, err = pivot_get_distinct_values(pivot_df, filter_col)
+                        if err:
+                            st.error(err)
+                        else:
+                            st.session_state.pivot_filter_options = vals
+                            st.rerun()
+            if st.session_state.get("pivot_filter_options") is not None:
+                opts = st.session_state.pivot_filter_options
+                filter_selected = st.multiselect("选择要保留的值", options=opts, default=[], key="pivot_filter_multiselect")
+        elif filter_mode == "输入条件":
+            st.caption("数据库：按 MySQL WHERE 子句规则填写（不含 WHERE 关键字）。文件：按 Python 表达式填写，如 age > 18 and city == '北京'")
+            filter_where = st.text_area("条件", key="pivot_filter_where", placeholder="例如：age > 18 AND city = '北京'", height=80)
+
+        st.markdown("#### 行 / 列 / 值")
+        c1, c2 = st.columns(2)
+        with c1:
+            row_fields = st.multiselect("行字段", options=cols, default=[], key="pivot_row_fields")
+        with c2:
+            col_fields = st.multiselect("列字段", options=cols, default=[], key="pivot_col_fields")
+        st.markdown("**值字段与聚合**：选择一个值字段，勾选需要的聚合方式。")
+        value_col = st.selectbox("值字段", options=cols, key="pivot_value_col")
+        agg_checks = st.columns(5)
+        with agg_checks[0]:
+            agg_sum = st.checkbox("求和", key="pivot_agg_sum")
+        with agg_checks[1]:
+            agg_count = st.checkbox("计数", key="pivot_agg_count")
+        with agg_checks[2]:
+            agg_mean = st.checkbox("平均值", key="pivot_agg_mean")
+        with agg_checks[3]:
+            agg_max = st.checkbox("最大值", key="pivot_agg_max")
+        with agg_checks[4]:
+            agg_min = st.checkbox("最小值", key="pivot_agg_min")
+        values_aggs = []
+        if agg_sum:
+            values_aggs.append((value_col, "加总"))
+        if agg_count:
+            values_aggs.append((value_col, "计数"))
+        if agg_mean:
+            values_aggs.append((value_col, "平均值"))
+        if agg_max:
+            values_aggs.append((value_col, "最大值"))
+        if agg_min:
+            values_aggs.append((value_col, "最小值"))
+
+        do_pivot = st.button("生成透视表", type="primary", key="pivot_do")
+        if do_pivot:
+            if not row_fields and not col_fields:
+                st.warning("请至少选择行字段或列字段。")
+            elif not values_aggs:
+                st.warning("请至少勾选一种值字段的聚合方式（求和/计数/平均值/最大值/最小值）。")
+            else:
+                with st.spinner("正在生成透视表..."):
+                    try:
+                        if pivot_use_db:
+                            cfg = st.session_state.get("pivot_db_config")
+                            if not cfg:
+                                st.error("请先点击「获取表字段」完成数据库配置。")
+                            else:
+                                where_clause = None
+                                if filter_mode == "输入条件" and filter_where and filter_where.strip():
+                                    where_clause = filter_where.strip()
+                                elif filter_mode == "按取值选择" and filter_col and filter_selected:
+                                    db_t = cfg.get("db_type", "mysql")
+                                    if db_t == "psql":
+                                        col_esc = '"' + str(filter_col).replace('"', '""') + '"'
+                                    else:
+                                        col_esc = "`" + str(filter_col).replace("`", "``") + "`"
+                                    def _sql_val(x):
+                                        if x is None:
+                                            return "NULL"
+                                        if isinstance(x, (int, float)) and not isinstance(x, bool):
+                                            return str(x)
+                                        s = str(x).replace("\\", "\\\\").replace("'", "''")
+                                        return "'%s'" % s
+                                    in_vals = ",".join(_sql_val(v) for v in filter_selected)
+                                    where_clause = "%s IN (%s)" % (col_esc, in_vals)
+                                result_df, err = pivot_build_from_db(
+                                    cfg.get("db_type", "mysql"), cfg["host"], cfg["port"], cfg["user"], cfg["password"],
+                                    cfg["database"], cfg["table"],
+                                    row_fields, col_fields, values_aggs, where_clause, cfg.get("schema"),
+                                )
+                                if err:
+                                    st.error(err)
+                                else:
+                                    st.session_state.pivot_result_df = result_df
+                                    st.rerun()
+                        else:
+                            work_df = pivot_df
+                            if filter_mode == "按取值选择" and filter_col and filter_selected:
+                                work_df, err = pivot_filter_dataframe(pivot_df, filter_col=filter_col, selected_values=filter_selected)
+                                if err:
+                                    st.error(err)
+                                    work_df = None
+                            elif filter_mode == "输入条件" and filter_where and filter_where.strip():
+                                work_df, err = pivot_filter_dataframe(pivot_df, where_expr=filter_where)
+                                if err:
+                                    st.error(err)
+                                    work_df = None
+                            if work_df is not None:
+                                result_df, err = pivot_build_table(work_df, row_fields, col_fields, values_aggs)
+                                if err:
+                                    st.error(err)
+                                else:
+                                    st.session_state.pivot_result_df = result_df
+                                    st.rerun()
+                    except Exception as e:
+                        st.error(f"生成失败：{e}")
+                        import traceback
+                        with st.expander("错误详情", expanded=False):
+                            st.code(traceback.format_exc())
+        if st.session_state.get("pivot_result_df") is not None:
+            res = st.session_state.pivot_result_df
+            st.success("透视表已生成")
+            st.caption("若列较多，可左右滑动表格区域查看完整内容；导出文件为完整结果。")
+            # 把行索引变为普通列，避免最左侧一列在预览时被隐藏，并避免双滚动条
+            has_index = getattr(res.index, "name", None) is not None or isinstance(getattr(res, "index", None), pd.MultiIndex)
+            display_df = res.reset_index() if has_index else res
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.markdown("#### 导出")
+            b1, b2 = st.columns(2)
+            _include_index = getattr(res.index, "name", None) is not None or (hasattr(res, "index") and isinstance(res.index, pd.MultiIndex))
+            with b1:
+                buf_x = BytesIO()
+                res.to_excel(buf_x, index=_include_index, engine="openpyxl")
+                buf_x.seek(0)
+                st.download_button("下载 Excel", data=buf_x.getvalue(), file_name="数据透视表结果.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="pivot_dl_xlsx")
+            with b2:
+                buf_c = BytesIO()
+                res.to_csv(buf_c, index=_include_index, encoding="utf-8-sig")
+                buf_c.seek(0)
+                st.download_button("下载 CSV", data=buf_c.getvalue(), file_name="数据透视表结果.csv", mime="text/csv", key="pivot_dl_csv")
+    else:
+        if not pivot_use_db:
+            st.info("请上传一个 Excel 或 CSV 文件以开始配置透视表。")
+        else:
+            st.info("请填写上方数据库连接信息并点击「获取表字段」。若已点击但列表仍未出现，请查看本页上方是否有红色报错（如曾提示缺少驱动，请在本机终端运行：pip install psycopg2-binary 后重试）。")
     st.stop()
 
 # ---------- 合并页（公共桩 / 充电站） ----------

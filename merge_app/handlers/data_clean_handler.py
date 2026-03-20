@@ -18,11 +18,14 @@ RULE_CURRENT = "current"
 RULE_STATION_INNER_ID = "station_inner_id"
 RULE_PILE_DEVICE_TYPE = "pile_device_type"
 RULE_PILE_OPEN_TIME = "pile_open_time"
+RULE_PSQL_COL_ORDER = "psql_col_order"
+RULE_LATLON = "latlon_std"
+RULE_PHONE = "phone_std"
 
 RULE_LABELS = {
     RULE_NULL_STD: "空值标准化",
     RULE_UID: "主键（uid，复合字段哈希）",
-    RULE_SEQUENCE: "序号列（从1递增）",
+    RULE_SEQUENCE: "序号列（递增，可设起始）",
     RULE_LOCATION: "充电站位置截断（≤600字）",
     RULE_DATE: "日期清洗（yyyy-mm-dd + 结果列）",
     RULE_POWER: "功率→kW",
@@ -31,22 +34,46 @@ RULE_LABELS = {
     RULE_STATION_INNER_ID: "充电站内部编号缺失校验",
     RULE_PILE_DEVICE_TYPE: "设备类型标准化（交流/直流）",
     RULE_PILE_OPEN_TIME: "设备开通时间校验",
+    RULE_PSQL_COL_ORDER: "根据psql调整数据顺序",
+    RULE_LATLON: "经纬度字段不合理清洗",
+    RULE_PHONE: "联系电话过长审查",
 }
+
+# 根据 psql 调整数据顺序：必补四列
+PSQL_FOUR_COLS = ["上报机构", "运营商类型", "充电桩生产厂商名称", "充电桩生产厂商类型"]
+# 参考列顺序（54 列，与《数据清洗规则》7.4 一致）
+REFERENCE_COLUMNS_PSQL = [
+    "uid", "序号", "上报机构", "充电桩编号", "充电桩内部编号", "省份", "城市", "区县",
+    "经度", "纬度", "经纬度标准", "充电桩类型", "充电桩所属区域分类", "所属充电站编号",
+    "充电站内部编号", "充电站名称", "充电站位置", "充电站投入使用时间", "充电站所处道路属性",
+    "充电站联系电话", "充电桩所属运营商", "电表号", "充电桩厂商编号", "充电桩型号", "充电桩属性",
+    "充电桩生产日期", "服务时间", "桩型号是否获得联盟标识授权", "支付方式", "设备开通时间",
+    "额定电压上限", "额定电压下限", "额定电流上限", "额定电流下限", "额定功率",
+    "接口数量", "接口1标准", "接口2标准", "接口3标准", "接口4标准", "备注",
+    "省份_中文", "城市_中文", "区县_中文", "充电桩类型_转换", "充电桩属性_转换",
+    "充电桩所属运营商_转换", "充电桩厂商编号_转换", "入库时间", "运营商名称", "运营商类型",
+    "充电桩内部编号_运营商名称", "充电桩生产厂商名称", "充电桩生产厂商类型",
+]
 
 # 主键 uid：复合字段（按顺序），见《数据清洗规则》1.2
 UID_COLUMN = "uid"
 UID_KEY_STATION = ["充电站内部编号", "充电站名称"]
-UID_KEY_PILE = ["充电桩编号", "所属充电站编号", "充电站内部编号"]
+UID_KEY_PILE = ["充电桩编号", "所属充电站编号", "充电站内部编号", "序号"]
 
 # 按表类型适用的规则（执行顺序）
 RULES_STATION = [
     RULE_NULL_STD, RULE_UID, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT, RULE_STATION_INNER_ID,
+    RULE_LATLON, RULE_PHONE,
+    RULE_PSQL_COL_ORDER,
 ]
+# 充电桩表：序号在 uid 之前（自定义清洗可取消勾选序号）；若表内已有有效序号则 uid 直接使用
 RULES_PILE = [
-    RULE_NULL_STD, RULE_UID, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
+    RULE_NULL_STD, RULE_SEQUENCE, RULE_UID, RULE_LOCATION, RULE_DATE,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT,
     RULE_PILE_DEVICE_TYPE, RULE_PILE_OPEN_TIME,
+    RULE_LATLON, RULE_PHONE,
+    RULE_PSQL_COL_ORDER,
 ]
 
 
@@ -76,6 +103,16 @@ STATION_INNER_ID_COL = "充电站内部编号"
 LOCATION_COL = "充电站位置"
 OPEN_TIME_COL = "设备开通时间"
 DEVICE_TYPE_COL = "充电桩类型"
+# 经纬度：物理范围与小数位（整数部分由范围自然满足 ≤3 位）
+LAT_COL = "纬度"
+LON_COL = "经度"
+LAT_MIN, LAT_MAX = -90.0, 90.0
+LON_MIN, LON_MAX = -180.0, 180.0
+COORD_DECIMALS = 6
+# 充电站联系电话：仅保留数字与英文逗号，总长≤50
+PHONE_COL = "充电站联系电话"
+PHONE_MAX_LEN = 50
+PHONE_EMPTY_KEYWORDS = ("无", "n/a", "na", "null", "无无", "-", "—")
 
 
 def _detect_table_type(df: pd.DataFrame) -> str:
@@ -101,13 +138,31 @@ def _standardize_nulls(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _ensure_uid_column(df: pd.DataFrame, table_type: str) -> pd.DataFrame:
+def _sequence_column_has_values(df: pd.DataFrame) -> bool:
+    """序号列存在且至少有一行非空（充电桩 uid 复合用）。"""
+    if "序号" not in df.columns:
+        return False
+    for v in df["序号"]:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in ("null", "nan", ""):
+            return True
+    return False
+
+
+def _ensure_uid_column(
+    df: pd.DataFrame, table_type: str, sequence_start: int = 1
+) -> pd.DataFrame:
     """
     按《数据清洗规则》1.2 生成主键列 uid：复合字段按顺序用 | 拼接后 MD5 十六进制。
-    充电站：充电站内部编号、充电站名称；充电桩：充电桩编号、所属充电站编号、充电站内部编号。
+    充电站：充电站内部编号、充电站名称；充电桩：充电桩编号、所属充电站编号、充电站内部编号、序号。
+    充电桩：若未勾选「序号」规则但表内无数号或序号全空，则按 sequence_start 自动生成序号列后再算 uid。
     若某行参与复合的字段全为空，则用行号哈希避免重复。
     """
     df = df.copy()
+    if table_type == "pile" and not _sequence_column_has_values(df):
+        df = _ensure_sequence_column(df, start=sequence_start)
     key_cols = UID_KEY_STATION if table_type == "station" else UID_KEY_PILE
     # 只使用表中存在的列，缺失列视为空字符串参与拼接
     existing = [c for c in key_cols if c in df.columns]
@@ -130,12 +185,15 @@ def _ensure_uid_column(df: pd.DataFrame, table_type: str) -> pd.DataFrame:
     return df
 
 
-def _ensure_sequence_column(df: pd.DataFrame) -> pd.DataFrame:
-    """生成从 1 递增的序号列，若已有则覆盖。仅作展示与行号，不作为主键。"""
+def _ensure_sequence_column(df: pd.DataFrame, start: int = 1) -> pd.DataFrame:
+    """生成递增序号列（列名：序号），若已有则覆盖。start 为起始值（含）。"""
     df = df.copy()
+    if start < 1:
+        start = 1
     if "序号" in df.columns:
         df = df.drop(columns=["序号"])
-    df.insert(0, "序号", range(1, len(df) + 1))
+    n = len(df)
+    df.insert(0, "序号", range(start, start + n))
     return df
 
 
@@ -252,10 +310,12 @@ def _apply_date_cleaning(
         cleaned = []
         flags = []
         for v in df[col]:
+            _empty = v is None or (isinstance(v, float) and pd.isna(v)) or not str(v).strip() or str(v).strip().lower() in ("null", "nan")
             out, ok = _parse_date_to_ymd(v)
             cleaned.append(out if out else str(v))
-            flags.append(1 if ok else 0)
-            if not ok and str(v).strip() and str(v).lower() not in ("null", "nan", ""):
+            # 原日期为空时，清洗结果列填 1；否则成功 1、失败 0
+            flags.append(1 if _empty else (1 if ok else 0))
+            if not ok and not _empty:
                 unknown_formats_set.add(str(v)[:80])
         df[col] = cleaned
         if result_col not in df.columns:
@@ -421,15 +481,105 @@ def _apply_pile_specific(
     return df
 
 
+def _apply_latlon_cleaning(df: pd.DataFrame, report: Dict[str, Any]) -> pd.DataFrame:
+    """
+    经纬度字段不合理清洗：纬度[-90,90]、经度[-180,180]，保留6位小数，异常值标记为空。
+    报告：latlon_invalid_rows（行号、列、原值、修正方式）、latlon_invalid_count。
+    使用向量化操作避免逐行 iloc，提升大表性能。
+    """
+    df = df.copy()
+    invalid_rows: List[Dict[str, Any]] = []
+    total_invalid = 0
+    for col, vmin, vmax in [(LAT_COL, LAT_MIN, LAT_MAX), (LON_COL, LON_MIN, LON_MAX)]:
+        if col not in df.columns:
+            continue
+        ser = df[col]
+        numeric = pd.to_numeric(ser, errors="coerce")
+        rounded = numeric.round(COORD_DECIMALS)
+        int_part = rounded.fillna(0).astype(int)
+        in_range = (numeric >= vmin) & (numeric <= vmax)
+        valid = in_range & (int_part.abs() < 1000)
+        df[col] = rounded.where(valid)
+        invalid_mask = ~valid
+        total_invalid += int(invalid_mask.sum())
+        non_numeric = pd.isna(numeric) & ser.astype(str).str.strip().ne("")
+        out_of_range = pd.notna(numeric) & ~in_range
+        inv_positions = invalid_mask.to_numpy().nonzero()[0][:500]
+        for pos in inv_positions:
+            o = str(ser.iloc[pos])[:50]
+            if non_numeric.iloc[pos]:
+                reason = "标记为NULL"
+            elif out_of_range.iloc[pos]:
+                reason = "超出范围，标记为NULL"
+            else:
+                reason = "整数位超限，标记为NULL"
+            invalid_rows.append({"行号": int(pos) + 1, "列": col, "原值": o, "修正方式": reason})
+    report["latlon_invalid_rows"] = invalid_rows
+    report["latlon_invalid_count"] = total_invalid
+    return df
+
+
+def _apply_phone_cleaning(df: pd.DataFrame, report: Dict[str, Any]) -> pd.DataFrame:
+    """
+    充电站联系电话：仅保留0-9和英文逗号；总长≤50截断；无/ N/A等置空。
+    报告：phone_cleaned_count、phone_abnormal_examples。向量化实现以提升大表性能。
+    """
+    df = df.copy()
+    if PHONE_COL not in df.columns:
+        report["phone_cleaned_count"] = 0
+        report["phone_abnormal_examples"] = []
+        return df
+    ser = df[PHONE_COL]
+    orig = ser.astype(str).str.strip().replace("nan", "").replace("None", "")
+    empty_mask = (orig == "") | orig.str.lower().isin(PHONE_EMPTY_KEYWORDS)
+    filtered = orig.str.replace(r"[^0-9,]", "", regex=True)
+    new = filtered.str[: PHONE_MAX_LEN]
+    new = new.where(~empty_mask, "")
+    new = new.fillna("")
+    df[PHONE_COL] = new
+    changed = (orig != new)
+    cleaned_count = int(changed.sum())
+    sample_positions = changed.to_numpy().nonzero()[0][:30]
+    abnormal_examples = [str(orig.iloc[i])[:80] for i in sample_positions]
+    report["phone_cleaned_count"] = cleaned_count
+    report["phone_abnormal_examples"] = abnormal_examples
+    return df
+
+
+def _apply_psql_column_order(df: pd.DataFrame, report: Dict[str, Any]) -> pd.DataFrame:
+    """
+    根据 psql 参考列顺序：1）补全四列；2）补全参考列并记录新增字段；3）按参考顺序重排列。
+    """
+    df = df.copy()
+    # 步骤 1：必补四列
+    for col in PSQL_FOUR_COLS:
+        if col not in df.columns:
+            df[col] = ""
+    # 步骤 2：参考列中除四列外，缺失则新增并记录
+    added_columns: List[str] = []
+    for col in REFERENCE_COLUMNS_PSQL:
+        if col not in df.columns:
+            df[col] = ""
+            added_columns.append(col)
+    report["psql_added_columns"] = added_columns
+    # 步骤 3：列顺序 = 参考顺序中存在的列 + 表中多出的列
+    ordered = [c for c in REFERENCE_COLUMNS_PSQL if c in df.columns]
+    extra = [c for c in df.columns if c not in REFERENCE_COLUMNS_PSQL]
+    df = df[ordered + extra]
+    return df
+
+
 def clean_dataframe(
     df: pd.DataFrame,
     table_type: Optional[str] = None,
     rules_to_apply: Optional[Iterable[str]] = None,
+    sequence_start: int = 1,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     对充电站或充电桩表执行清洗（规范 V2.0）。
     table_type: "station" | "pile" | None（None 时按列名自动识别）。
     rules_to_apply: 若为 None 则应用该类型全部规则；否则仅应用集合中的规则 ID。
+    sequence_start: 序号列起始值（执行「序号」规则或充电桩 uid 自动补序号时使用）。
     返回 (清洗后 DataFrame, 报告字典)，报告含 applied_rules: [(rule_id, 中文名), ...]。
     """
     empty_report = {
@@ -439,6 +589,11 @@ def clean_dataframe(
         "power_w_to_kw_count": 0,
         "station_inner_id_missing_rows": [],
         "pile_open_time_anomaly_rows": [],
+        "psql_added_columns": [],
+        "latlon_invalid_rows": [],
+        "latlon_invalid_count": 0,
+        "phone_cleaned_count": 0,
+        "phone_abnormal_examples": [],
         "applied_rules": [],
     }
     if df is None or df.empty:
@@ -448,6 +603,7 @@ def clean_dataframe(
     rule_order = RULES_STATION if t == "station" else RULES_PILE
     to_apply: Set[str] = set(rules_to_apply) if rules_to_apply is not None else set(rule_order)
     applied: List[Tuple[str, str]] = []
+    seq_start = sequence_start if sequence_start >= 1 else 1
 
     for rule_id in rule_order:
         if rule_id not in to_apply:
@@ -457,9 +613,9 @@ def clean_dataframe(
         if rule_id == RULE_NULL_STD:
             df = _standardize_nulls(df)
         elif rule_id == RULE_UID:
-            df = _ensure_uid_column(df, t)
+            df = _ensure_uid_column(df, t, sequence_start=seq_start)
         elif rule_id == RULE_SEQUENCE:
-            df = _ensure_sequence_column(df)
+            df = _ensure_sequence_column(df, start=seq_start)
         elif rule_id == RULE_LOCATION:
             df = _truncate_location(df)
         elif rule_id == RULE_DATE:
@@ -482,5 +638,11 @@ def clean_dataframe(
             df = _apply_pile_specific(df, report, do_device_type=True, do_open_time=False)
         elif rule_id == RULE_PILE_OPEN_TIME and t == "pile":
             df = _apply_pile_specific(df, report, do_device_type=False, do_open_time=True)
+        elif rule_id == RULE_LATLON:
+            df = _apply_latlon_cleaning(df, report)
+        elif rule_id == RULE_PHONE:
+            df = _apply_phone_cleaning(df, report)
+        elif rule_id == RULE_PSQL_COL_ORDER:
+            df = _apply_psql_column_order(df, report)
     report["applied_rules"] = applied
     return df, report

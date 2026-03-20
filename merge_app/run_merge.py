@@ -31,6 +31,10 @@ def main():
     sys.argv = [
         "streamlit", "run", app_path,
         "--server.port", "8501",
+        "--server.maxUploadSize", "600",
+        "--server.maxMessageSize", "600",
+        "--server.enableXsrfProtection", "false",
+        "--server.enableCORS", "false",
         "--browser.gatherUsageStats", "false",
     ]
     os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
