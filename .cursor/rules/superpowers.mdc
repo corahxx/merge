@@ -1,0 +1,27 @@
+---
+description: 所有开发会话必须遵循 Superpowers 技能工作流（本仓库已内置技能包）
+alwaysApply: true
+---
+
+# Superpowers 工作流（强制）
+
+本仓库在 `.cursor/skills/superpowers/` 安装了 Superpowers 技能包（与 Cursor 公共插件同源的一套流程技能）。
+
+## 对 Agent 的要求
+
+1. **在任何回复或调用工具之前**：只要任务有**任何**可能与某条 Superpowers 技能相关（含澄清问题、简单查询），必须先 **Read**  
+   `.cursor/skills/superpowers/using-superpowers/SKILL.md`  
+   再按其中流程，对适用任务 **Read** 对应子技能，例如：
+   - 创意/新功能：`brainstorming`
+   - Bug / 异常：`systematic-debugging`
+   - 新功能或修复实现：`test-driven-development`
+   - 宣称完成 / 提交前：`verification-before-completion`
+   - 多步骤计划：`writing-plans` / `executing-plans`
+   - 其他见各文件夹内 `SKILL.md` 的 `description` 前 matter。
+2. **工具映射**：技能文中若写「Skill 工具 / invoke skill」，在本环境用 **Read** 读取上述相对路径的 `SKILL.md` 并严格遵循正文。
+3. **优先级**：用户在本对话或项目文档中的**明确指令**优先于技能；技能优先于默认即兴流程。
+
+## 路径约定
+
+- 元技能：`.cursor/skills/superpowers/using-superpowers/SKILL.md`
+- 其余：`.cursor/skills/superpowers/<目录名>/SKILL.md`（含 `references/` 子目录时请一并 Read 被引用的文件）

@@ -4,6 +4,7 @@ import re
 import hashlib
 import pandas as pd
 from typing import Optional, Tuple, Dict, List, Any, Set, Iterable
+import math
 from datetime import datetime
 
 # 规则 ID（用于自定义清洗勾选与 applied_rules 报告）
@@ -21,6 +22,8 @@ RULE_PILE_OPEN_TIME = "pile_open_time"
 RULE_PSQL_COL_ORDER = "psql_col_order"
 RULE_LATLON = "latlon_std"
 RULE_PHONE = "phone_std"
+RULE_DATE_ZERO_DAY = "date_zero_day"
+RULE_METER_MAX_LEN = "meter_max_len"
 
 RULE_LABELS = {
     RULE_NULL_STD: "空值标准化",
@@ -37,6 +40,8 @@ RULE_LABELS = {
     RULE_PSQL_COL_ORDER: "根据psql调整数据顺序",
     RULE_LATLON: "经纬度字段不合理清洗",
     RULE_PHONE: "联系电话过长审查",
+    RULE_DATE_ZERO_DAY: "日期中00日处理",
+    RULE_METER_MAX_LEN: "电表号过长处理",
 }
 
 # 根据 psql 调整数据顺序：必补四列
@@ -63,6 +68,7 @@ UID_KEY_PILE = ["充电桩编号", "所属充电站编号", "充电站内部编�
 # 按表类型适用的规则（执行顺序）
 RULES_STATION = [
     RULE_NULL_STD, RULE_UID, RULE_SEQUENCE, RULE_LOCATION, RULE_DATE,
+    RULE_DATE_ZERO_DAY, RULE_METER_MAX_LEN,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT, RULE_STATION_INNER_ID,
     RULE_LATLON, RULE_PHONE,
     RULE_PSQL_COL_ORDER,
@@ -70,6 +76,7 @@ RULES_STATION = [
 # 充电桩表：序号在 uid 之前（自定义清洗可取消勾选序号）；若表内已有有效序号则 uid 直接使用
 RULES_PILE = [
     RULE_NULL_STD, RULE_SEQUENCE, RULE_UID, RULE_LOCATION, RULE_DATE,
+    RULE_DATE_ZERO_DAY, RULE_METER_MAX_LEN,
     RULE_POWER, RULE_VOLTAGE, RULE_CURRENT,
     RULE_PILE_DEVICE_TYPE, RULE_PILE_OPEN_TIME,
     RULE_LATLON, RULE_PHONE,
@@ -98,6 +105,11 @@ CURRENT_COLUMNS = ["额定电流上限", "额定电流下限"]
 DATE_COLUMN_EXACT = ("充电站投入使用时间", "设备开通时间", "入库时间", "充电桩生产日期")
 DATE_LIKE_KEYWORDS = ("时间", "日期")
 DATE_EXCLUDE_COLUMN = "服务时间"
+# PostgreSQL 日期时间入库：Excel 序列号合理区间（与 WPS/Excel 1900 系统一致，由 openpyxl 换算）；排除 0、1 以免与 0/1 标记混淆
+DATE_RESULT_COL_SUFFIX = "_日期清洗结果"
+DATE_COLUMN_EXCLUDE_FLAG_SUFFIXES = ("_标记", "_标志")  # 列名以这些结尾视为 0/1 类标记列，不参与 Excel 序列号转换
+EXCEL_SERIAL_MAX = 100_000.0
+EXCEL_SERIAL_MIN_EXCLUSIVE = 1.0  # 仅接受 serial > 1（排除 0、1）
 LOCATION_MAX_LEN = 600
 STATION_INNER_ID_COL = "充电站内部编号"
 LOCATION_COL = "充电站位置"
@@ -113,6 +125,9 @@ COORD_DECIMALS = 6
 PHONE_COL = "充电站联系电话"
 PHONE_MAX_LEN = 50
 PHONE_EMPTY_KEYWORDS = ("无", "n/a", "na", "null", "无无", "-", "—")
+# 电表号列名包含「电表号」时截断长度
+METER_MAX_LEN = 50
+METER_NAME_KEYWORD = "电表号"
 
 
 def _detect_table_type(df: pd.DataFrame) -> str:
@@ -267,22 +282,233 @@ def _parse_date_to_ymd(val: Any) -> Tuple[Optional[str], bool]:
                 return f"{year:04d}-{month:02d}-{day:02d}", True
         except (ValueError, IndexError):
             pass
-    # pd.to_datetime 兜底
+    # 纯数字串（含小数）：上层已处理 Excel 序列号与 8 位 yyyymmdd；此处不再让 pandas 误解析（如 45138）
+    if re.fullmatch(r"-?\d+(\.\d+)?", s):
+        return None, False
+    # pd.to_datetime 兜底（源数据 20220100 等会解析成 day=0，统一将日改为 01）
     try:
         dt = pd.to_datetime(s)
         if pd.notna(dt):
-            return dt.strftime("%Y-%m-%d"), True
+            d = getattr(dt, "day", None)
+            mo = getattr(dt, "month", None)
+            if d is not None and mo is not None and 1 <= mo <= 12:
+                if d == 0:
+                    d = 1
+                if 1 <= d <= 31:
+                    return f"{dt.year:04d}-{mo:02d}-{d:02d}", True
     except Exception:
         pass
     return None, False
 
 
+def _column_allows_excel_serial(col_str: str) -> bool:
+    """结果列、明显标记列不做 Excel 序列号转换。"""
+    if col_str.endswith(DATE_RESULT_COL_SUFFIX):
+        return False
+    if any(col_str.endswith(sfx) for sfx in DATE_COLUMN_EXCLUDE_FLAG_SUFFIXES):
+        return False
+    return True
+
+
+def _try_keep_valid_datetime_text(s: str) -> Optional[str]:
+    """若已是 PostgreSQL 可接受的 ISO 风格日期/时间文本，原样保留（仅 strip）。"""
+    raw = s.strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    if " " in raw and "T" not in raw[:13]:
+        candidates.append(raw.replace(" ", "T", 1))
+    for c in candidates:
+        try:
+            datetime.fromisoformat(c)
+            return raw
+        except ValueError:
+            continue
+    return None
+
+
+def _try_compact_yyyymmdd_str(s: str) -> Optional[str]:
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", s.strip())
+    if not m:
+        return None
+    try:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _excel_serial_candidate_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and (math.isnan(val) or pd.isna(val)):
+            return None
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    if isinstance(val, str):
+        t = val.strip()
+        if not t:
+            return None
+        if not re.fullmatch(r"-?\d+(\.\d+)?", t):
+            return None
+        try:
+            f = float(t)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return f
+        except ValueError:
+            return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def _try_excel_serial_to_pg_text(val: Any) -> Optional[str]:
+    """
+    Excel 1900 日期系统：与 Excel/WPS 一致使用 openpyxl.utils.datetime.from_excel。
+    输出：无小数部分为 YYYY-MM-DD；含时间为 YYYY-MM-DD HH:MM:SS。
+    """
+    sn = _excel_serial_candidate_float(val)
+    if sn is None:
+        return None
+    if not (EXCEL_SERIAL_MIN_EXCLUSIVE < sn <= EXCEL_SERIAL_MAX):
+        return None
+    try:
+        from openpyxl.utils.datetime import from_excel
+
+        dt = from_excel(sn)
+    except Exception:
+        return None
+    if dt.year < 1900 or dt.year > 2200:
+        return None
+    if abs(sn - round(sn)) < 1e-9:
+        return dt.strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_dt_for_pg(dt: datetime) -> str:
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
+        return dt.strftime("%Y-%m-%d")
+    if dt.microsecond:
+        frac = f"{dt.microsecond:06d}".rstrip("0")
+        if frac:
+            return dt.strftime("%Y-%m-%d %H:%M:%S") + "." + frac
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_date_cell_for_pg(val: Any, col_name: str) -> Tuple[str, int, bool]:
+    """
+    日期时间列单格清洗：目标为 PostgreSQL timestamp/date 可解析文本。
+    返回 (新值, 结果标记 1=原空或成功/0=原非空且失败, 是否由 Excel 序列号得到)。
+    无法解析的非空值：置空字符串。
+    """
+    col_str = str(col_name).strip()
+    allow_excel = _column_allows_excel_serial(col_str)
+
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "", 1, False
+    if isinstance(val, bool):
+        return "", 0, False
+    if isinstance(val, pd.Timestamp):
+        if pd.isna(val):
+            return "", 1, False
+        return _format_dt_for_pg(val.to_pydatetime()), 1, False
+    if isinstance(val, datetime):
+        return _format_dt_for_pg(val), 1, False
+
+    s0 = str(val).strip()
+    if not s0 or s0.lower() in ("null", "nan", ""):
+        return "", 1, False
+
+    kept = _try_keep_valid_datetime_text(s0)
+    if kept is not None:
+        return kept, 1, False
+
+    fast = _try_fast_ymd_parse(s0)
+    if fast is not None:
+        out, _ok = fast
+        return out, 1, False
+
+    c8 = _try_compact_yyyymmdd_str(s0)
+    if c8 is not None:
+        return c8, 1, False
+
+    if allow_excel:
+        ex = _try_excel_serial_to_pg_text(val)
+        if ex is not None:
+            return ex, 1, True
+
+    out, ok = _parse_date_to_ymd(s0)
+    if ok and out:
+        return out, 1, False
+    return "", 0, False
+
+
+def _parsed_datetime_from_cleaned_cell(val: Any) -> Optional[datetime]:
+    """设备开通时间等校验：从清洗后的单元格解析 datetime（支持日期或带时间）。"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, pd.Timestamp):
+        if pd.isna(val):
+            return None
+        return val.to_pydatetime()
+    if isinstance(val, datetime):
+        return val
+    sn = _excel_serial_candidate_float(val)
+    if sn is not None and EXCEL_SERIAL_MIN_EXCLUSIVE < sn <= EXCEL_SERIAL_MAX:
+        try:
+            from openpyxl.utils.datetime import from_excel
+
+            dt = from_excel(sn)
+            if 1900 <= dt.year <= 2200:
+                return dt.replace(tzinfo=None)
+        except Exception:
+            pass
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d")
+    except ValueError:
+        pass
+    if re.fullmatch(r"-?\d+(\.\d+)?", s):
+        return None
+    try:
+        ts = pd.to_datetime(s)
+        if pd.notna(ts):
+            return ts.to_pydatetime()
+    except Exception:
+        pass
+    return None
+
+
 def _get_date_columns(df: pd.DataFrame) -> List[str]:
-    """适用日期清洗的列：固定字段 或 列名包含「时间」「日期」；排除「服务时间」。"""
+    """适用日期清洗的列：固定字段 或 列名包含「时间」「日期」；排除「服务时间」、结果列、标记列。"""
     cols = []
     for c in df.columns:
         c_str = str(c).strip()
         if c_str == DATE_EXCLUDE_COLUMN:
+            continue
+        if c_str.endswith(DATE_RESULT_COL_SUFFIX):
+            continue
+        if any(c_str.endswith(sfx) for sfx in DATE_COLUMN_EXCLUDE_FLAG_SUFFIXES):
             continue
         if c_str in DATE_COLUMN_EXACT:
             cols.append(c)
@@ -292,38 +518,105 @@ def _get_date_columns(df: pd.DataFrame) -> List[str]:
     return cols
 
 
+def _try_fast_ymd_parse(val: Any) -> Optional[Tuple[str, bool]]:
+    """已是 yyyy-mm-dd 且日月合法时快速返回，避免走完整解析链。"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if len(s) != 10 or s[4] != "-" or s[7] != "-":
+        return None
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return None
+    try:
+        y, mo, d = int(s[0:4]), int(s[5:7]), int(s[8:10])
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}", True
+    except ValueError:
+        pass
+    return None
+
+
 def _apply_date_cleaning(
     df: pd.DataFrame, report: Dict[str, Any]
 ) -> pd.DataFrame:
-    """对适用列统一为 yyyy-mm-dd（YMD），直接替换原值；无法识别的保留原值。可选写 xxx_日期清洗结果。"""
+    """
+    对适用列清洗为 PostgreSQL date/timestamp 可解析文本（YYYY-MM-DD 或带时分秒）；
+    支持 Excel 序列号、合法 ISO 文本原样保留；无法解析的非空值置空。
+    写 xxx_日期清洗结果（1=原空或成功，0=原非空且失败）。日=00 由「日期中00日处理」处理。
+    """
     date_cols = _get_date_columns(df)
     if not date_cols:
         report["date_clean_success"] = 0
         report["date_clean_fail"] = 0
         report["date_unknown_formats"] = []
+        report["date_excel_serial_converted_count"] = 0
         return df
     df = df.copy()
     success_per_cell = []
     unknown_formats_set = set()
+    excel_serial_total = 0
     for col in date_cols:
-        result_col = f"{col}_日期清洗结果" if col + "_日期清洗结果" not in df.columns else col + "_日期清洗结果"
+        result_col = f"{col}_日期清洗结果"
         cleaned = []
         flags = []
         for v in df[col]:
             _empty = v is None or (isinstance(v, float) and pd.isna(v)) or not str(v).strip() or str(v).strip().lower() in ("null", "nan")
-            out, ok = _parse_date_to_ymd(v)
-            cleaned.append(out if out else str(v))
-            # 原日期为空时，清洗结果列填 1；否则成功 1、失败 0
-            flags.append(1 if _empty else (1 if ok else 0))
-            if not ok and not _empty:
+            new_s, cell_flag, was_excel = _normalize_date_cell_for_pg(v, col)
+            if was_excel:
+                excel_serial_total += 1
+            cleaned.append(new_s)
+            flags.append(cell_flag)
+            if cell_flag == 0 and not _empty:
                 unknown_formats_set.add(str(v)[:80])
         df[col] = cleaned
-        if result_col not in df.columns:
-            df[result_col] = flags
+        df[result_col] = flags
         success_per_cell.extend(flags)
     report["date_clean_success"] = sum(success_per_cell)
     report["date_clean_fail"] = len(success_per_cell) - report["date_clean_success"]
     report["date_unknown_formats"] = sorted(unknown_formats_set)[:50]
+    report["date_excel_serial_converted_count"] = excel_serial_total
+    return df
+
+
+def _apply_date_zero_day_fix(df: pd.DataFrame, report: Dict[str, Any]) -> pd.DataFrame:
+    """
+    日期适用列中，单元格为严格 yyyy-mm-00 的改为 yyyy-mm-01（向量化）。
+    """
+    df = df.copy()
+    date_cols = _get_date_columns(df)
+    total = 0
+    if not date_cols:
+        report["date_zero_day_fixed_count"] = 0
+        return df
+    for col in date_cols:
+        s = df[col].astype(str)
+        mask = s.str.match(r"^\d{4}-\d{2}-00$", na=False)
+        n = int(mask.sum())
+        if n:
+            df.loc[mask, col] = s[mask].str.slice(0, 8) + "01"
+            total += n
+    report["date_zero_day_fixed_count"] = total
+    return df
+
+
+def _apply_meter_max_len(df: pd.DataFrame, report: Dict[str, Any]) -> pd.DataFrame:
+    """
+    列名包含「电表号」的列，字符串截断至 METER_MAX_LEN（向量化）。
+    """
+    df = df.copy()
+    total_trunc = 0
+    if not any(METER_NAME_KEYWORD in str(c) for c in df.columns):
+        report["meter_truncated_count"] = 0
+        return df
+    for c in df.columns:
+        if METER_NAME_KEYWORD not in str(c):
+            continue
+        ser = df[c]
+        s = ser.astype(str)
+        long_mask = s.str.len() > METER_MAX_LEN
+        total_trunc += int(long_mask.sum())
+        df[c] = s.str.slice(0, METER_MAX_LEN)
+    report["meter_truncated_count"] = total_trunc
     return df
 
 
@@ -469,13 +762,14 @@ def _apply_pile_specific(
         now = datetime.now()
         for i, row in df.iterrows():
             v = row.get(OPEN_TIME_COL)
-            out, ok = _parse_date_to_ymd(v)
-            if ok and out:
+            dt = _parsed_datetime_from_cleaned_cell(v)
+            if dt is not None:
                 try:
-                    dt = datetime.strptime(out, "%Y-%m-%d")
+                    if dt.tzinfo is not None:
+                        dt = dt.replace(tzinfo=None)
                     if dt > now:
                         anomaly_rows.append({"行号": i + 1, "序号": row.get("序号", i + 1), "设备开通时间": str(v)})
-                except ValueError:
+                except (TypeError, ValueError):
                     pass
     report["pile_open_time_anomaly_rows"] = anomaly_rows
     return df
@@ -586,6 +880,7 @@ def clean_dataframe(
         "date_clean_success": 0,
         "date_clean_fail": 0,
         "date_unknown_formats": [],
+        "date_excel_serial_converted_count": 0,
         "power_w_to_kw_count": 0,
         "station_inner_id_missing_rows": [],
         "pile_open_time_anomaly_rows": [],
@@ -594,6 +889,8 @@ def clean_dataframe(
         "latlon_invalid_count": 0,
         "phone_cleaned_count": 0,
         "phone_abnormal_examples": [],
+        "date_zero_day_fixed_count": 0,
+        "meter_truncated_count": 0,
         "applied_rules": [],
     }
     if df is None or df.empty:
@@ -620,6 +917,10 @@ def clean_dataframe(
             df = _truncate_location(df)
         elif rule_id == RULE_DATE:
             df = _apply_date_cleaning(df, report)
+        elif rule_id == RULE_DATE_ZERO_DAY:
+            df = _apply_date_zero_day_fix(df, report)
+        elif rule_id == RULE_METER_MAX_LEN:
+            df = _apply_meter_max_len(df, report)
         elif rule_id == RULE_POWER:
             df = _apply_numeric_cleaning(
                 df, report, do_power=True, do_voltage=False, do_current=False

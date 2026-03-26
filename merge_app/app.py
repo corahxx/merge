@@ -26,6 +26,19 @@ _generic_mod = _load_handler("generic_merge_handler", "generic_merge_handler.py"
 _csv_mod = _load_handler("csv_convert_handler", "csv_convert_handler.py")
 _pivot_mod = _load_handler("pivot_handler", "pivot_handler.py")
 
+# Excel 2007+ / openpyxl 单工作表最大行数；超过则无法写入 .xlsx（与列数无关）
+OPENPYXL_MAX_SHEET_ROWS = 1_048_576
+
+
+def _write_cleaned_csv_and_maybe_xlsx(df: pd.DataFrame, out_csv: str, out_xlsx: str) -> bool:
+    """先写 CSV；仅当行数不超过 Excel 单表上限时写 xlsx。返回是否已写入 xlsx。"""
+    df.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    if len(df) > OPENPYXL_MAX_SHEET_ROWS:
+        return False
+    df.to_excel(out_xlsx, index=False, engine="openpyxl")
+    return True
+
+
 def pile_merge_files(files, engine="openpyxl"):
     if _pile_mod is None:
         return None, [], ["公共桩合并模块加载失败"], []
@@ -361,11 +374,15 @@ if is_clean_view:
             if len(_s) > 0 and len(_s) <= 20:
                 with st.expander("✅ 成功保存路径", expanded=False):
                     for x in _s:
-                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {x.get('out_xlsx', '')}")
+                        _ox = x.get("out_xlsx")
+                        _xlsx_note = _ox if _ox else f"未生成（>{OPENPYXL_MAX_SHEET_ROWS:,} 行）"
+                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {_xlsx_note}")
             elif len(_s) > 20:
                 with st.expander("✅ 成功保存路径（前 20 个）", expanded=False):
                     for x in _s[:20]:
-                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {x.get('out_xlsx', '')}")
+                        _ox = x.get("out_xlsx")
+                        _xlsx_note = _ox if _ox else f"未生成（>{OPENPYXL_MAX_SHEET_ROWS:,} 行）"
+                        st.text(f"CSV: {x.get('out_csv', '')}  |  XLSX: {_xlsx_note}")
                     st.caption(f"… 共 {len(_s)} 个")
         if _clean_mod is None:
             st.error("清洗模块加载失败，请检查 handlers/data_clean_handler.py 是否存在。")
@@ -402,9 +419,14 @@ if is_clean_view:
                                 _base = os.path.splitext(os.path.basename(_path))[0]
                                 out_csv = os.path.join(_dir, f"{_base}_已清洗.csv")
                                 out_xlsx = os.path.join(_dir, f"{_base}_已清洗.xlsx")
-                                cleaned_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
-                                cleaned_df.to_excel(out_xlsx, index=False, engine="openpyxl")
-                                _success.append({"path": _path, "out_csv": out_csv, "out_xlsx": out_xlsx})
+                                _wrote_xlsx = _write_cleaned_csv_and_maybe_xlsx(cleaned_df, out_csv, out_xlsx)
+                                _success.append(
+                                    {
+                                        "path": _path,
+                                        "out_csv": out_csv,
+                                        "out_xlsx": out_xlsx if _wrote_xlsx else None,
+                                    }
+                                )
                                 _last_df, _last_report = cleaned_df, report
                             except Exception as e:
                                 _fail.append({"path": _path, "err": str(e)})
@@ -412,7 +434,15 @@ if is_clean_view:
                     st.session_state.clean_report = _last_report
                     st.session_state.clean_path_batch_result = {"success": _success, "fail": _fail}
                     if _n == 1 and _success:
-                        st.session_state.clean_path_done_msg = f"结果已保存到：{_success[0]['out_csv']}，{_success[0]['out_xlsx']}"
+                        _s0 = _success[0]
+                        if _s0.get("out_xlsx"):
+                            st.session_state.clean_path_done_msg = (
+                                f"结果已保存到：{_s0['out_csv']}，{_s0['out_xlsx']}"
+                            )
+                        else:
+                            st.session_state.clean_path_done_msg = (
+                                f"结果已保存 CSV：{_s0['out_csv']}（行数超过 Excel 单表上限 {OPENPYXL_MAX_SHEET_ROWS:,}，未生成 xlsx）"
+                            )
                     elif _n == 1 and _fail:
                         st.session_state.clean_path_done_msg = "该文件清洗失败，请查看下方失败列表。"
                     else:
@@ -493,9 +523,14 @@ if is_clean_view:
                                     _base = os.path.splitext(os.path.basename(_path))[0]
                                     out_csv = os.path.join(_dir, f"{_base}_已清洗.csv")
                                     out_xlsx = os.path.join(_dir, f"{_base}_已清洗.xlsx")
-                                    cleaned_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
-                                    cleaned_df.to_excel(out_xlsx, index=False, engine="openpyxl")
-                                    _success.append({"path": _path, "out_csv": out_csv, "out_xlsx": out_xlsx})
+                                    _wrote_xlsx = _write_cleaned_csv_and_maybe_xlsx(cleaned_df, out_csv, out_xlsx)
+                                    _success.append(
+                                        {
+                                            "path": _path,
+                                            "out_csv": out_csv,
+                                            "out_xlsx": out_xlsx if _wrote_xlsx else None,
+                                        }
+                                    )
                                     _last_df, _last_report = cleaned_df, report
                                 except Exception as e:
                                     _fail.append({"path": _path, "err": str(e)})
@@ -503,7 +538,15 @@ if is_clean_view:
                         st.session_state.clean_report = _last_report
                         st.session_state.clean_path_batch_result = {"success": _success, "fail": _fail}
                         if _n == 1 and _success:
-                            st.session_state.clean_path_done_msg = f"结果已保存到：{_success[0]['out_csv']}，{_success[0]['out_xlsx']}"
+                            _s0 = _success[0]
+                            if _s0.get("out_xlsx"):
+                                st.session_state.clean_path_done_msg = (
+                                    f"结果已保存到：{_s0['out_csv']}，{_s0['out_xlsx']}"
+                                )
+                            else:
+                                st.session_state.clean_path_done_msg = (
+                                    f"结果已保存 CSV：{_s0['out_csv']}（行数超过 Excel 单表上限 {OPENPYXL_MAX_SHEET_ROWS:,}，未生成 xlsx）"
+                                )
                         elif _n == 1 and _fail:
                             st.session_state.clean_path_done_msg = "该文件清洗失败，请查看下方失败列表。"
                         else:
@@ -548,6 +591,13 @@ if is_clean_view:
             with c4:
                 missing = clean_report.get("station_inner_id_missing_rows", [])
                 st.metric("充电站内部编号缺失", len(missing))
+            c5, c6, c7 = st.columns(3)
+            with c5:
+                st.metric("日期00日→01修正", clean_report.get("date_zero_day_fixed_count", 0))
+            with c6:
+                st.metric("电表号截断单元格", clean_report.get("meter_truncated_count", 0))
+            with c7:
+                st.metric("Excel序列号→日期", clean_report.get("date_excel_serial_converted_count", 0))
             unknown_fmts = clean_report.get("date_unknown_formats", [])
             if unknown_fmts:
                 with st.expander("⚠️ 无法识别的日期格式（样例）", expanded=False):
@@ -597,10 +647,21 @@ if is_clean_view:
             _name_csv = f"{_base}.csv"
             d1, d2 = st.columns(2)
             with d1:
-                buf = BytesIO()
-                df_cleaned.to_excel(buf, index=False, engine="openpyxl")
-                buf.seek(0)
-                st.download_button("下载清洗后 Excel", data=buf.getvalue(), file_name=_name_xlsx, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_cleaned_xlsx")
+                if len(df_cleaned) <= OPENPYXL_MAX_SHEET_ROWS:
+                    buf = BytesIO()
+                    df_cleaned.to_excel(buf, index=False, engine="openpyxl")
+                    buf.seek(0)
+                    st.download_button(
+                        "下载清洗后 Excel",
+                        data=buf.getvalue(),
+                        file_name=_name_xlsx,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_cleaned_xlsx",
+                    )
+                else:
+                    st.caption(
+                        f"当前 {len(df_cleaned):,} 行，超过 Excel 单表上限 {OPENPYXL_MAX_SHEET_ROWS:,} 行，无法生成 xlsx，请用右侧 CSV 下载。"
+                    )
             with d2:
                 buf_csv = BytesIO()
                 df_cleaned.to_csv(buf_csv, index=False, encoding="utf-8-sig")
@@ -625,7 +686,17 @@ if is_clean_view:
                         except Exception as e:
                             st.error(f"保存失败：{e}")
                 with c2:
-                    if st.button("保存 Excel 到链接文件夹", key="clean_save_xlsx_path"):
+                    _xlsx_too_big = len(df_cleaned) > OPENPYXL_MAX_SHEET_ROWS
+                    if st.button(
+                        "保存 Excel 到链接文件夹",
+                        key="clean_save_xlsx_path",
+                        disabled=_xlsx_too_big,
+                        help=(
+                            f"超过 {OPENPYXL_MAX_SHEET_ROWS:,} 行时 Excel 无法容纳整张表"
+                            if _xlsx_too_big
+                            else None
+                        ),
+                    ):
                         out_xlsx = os.path.join(clean_save_dir, f"{clean_source_basename}_已清洗.xlsx")
                         try:
                             df_cleaned.to_excel(out_xlsx, index=False, engine="openpyxl")
@@ -633,6 +704,10 @@ if is_clean_view:
                             st.rerun()
                         except Exception as e:
                             st.error(f"保存失败：{e}")
+                    if _xlsx_too_big:
+                        st.caption(
+                            f"Excel 单表最多 {OPENPYXL_MAX_SHEET_ROWS:,} 行，请使用「保存 CSV 到链接文件夹」。"
+                        )
         with st.expander("📋 清洗规则说明"):
             st.markdown("详见项目内《数据清洗规则》文档（`数据清洗规则.md`）。主要包含：通用空值/序号/位置截断、日期统一为 yyyy/mm/dd 与清洗结果标记、功率→kW/电压→V/电流→A、充电站内部编号缺失校验、充电桩设备类型标准化与设备开通时间校验。")
     else:
