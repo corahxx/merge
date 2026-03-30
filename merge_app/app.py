@@ -598,6 +598,11 @@ if is_clean_view:
                 st.metric("电表号截断单元格", clean_report.get("meter_truncated_count", 0))
             with c7:
                 st.metric("Excel序列号→日期", clean_report.get("date_excel_serial_converted_count", 0))
+            c8, c9 = st.columns(2)
+            with c8:
+                st.metric("8位yyyyMMdd日→01", clean_report.get("date_yyyymmdd_day_to_01_count", 0))
+            with c9:
+                st.metric("8位日期非法月清空", clean_report.get("date_yyyymmdd_invalid_month_cleared_count", 0))
             unknown_fmts = clean_report.get("date_unknown_formats", [])
             if unknown_fmts:
                 with st.expander("⚠️ 无法识别的日期格式（样例）", expanded=False):

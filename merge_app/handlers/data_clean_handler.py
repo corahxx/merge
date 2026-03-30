@@ -5,6 +5,7 @@ import hashlib
 import pandas as pd
 from typing import Optional, Tuple, Dict, List, Any, Set, Iterable
 import math
+import numpy as np
 from datetime import datetime
 
 # 规则 ID（用于自定义清洗勾选与 applied_rules 报告）
@@ -327,17 +328,89 @@ def _try_keep_valid_datetime_text(s: str) -> Optional[str]:
     return None
 
 
+def _days_in_month_scalar(y: int, mo: int) -> int:
+    if mo == 2:
+        leap = (y % 4 == 0) and ((y % 100 != 0) or (y % 400 == 0))
+        return 29 if leap else 28
+    if mo in (4, 6, 9, 11):
+        return 30
+    return 31
+
+
+def _days_in_month_vectorized(y: np.ndarray, mo: np.ndarray) -> np.ndarray:
+    """与 y, mo 同形状；mo 应在 1..12。"""
+    dim = np.full(y.shape, 31, dtype=np.int16)
+    m30 = (mo == 4) | (mo == 6) | (mo == 9) | (mo == 11)
+    dim = np.where(m30, 30, dim)
+    feb = mo == 2
+    leap = (y % 4 == 0) & ((y % 100 != 0) | (y % 400 == 0))
+    dim = np.where(feb & leap, 29, dim)
+    dim = np.where(feb & ~leap, 28, dim)
+    return dim
+
+
+def _vector_fix_compact_yyyymmdd_column(ser: pd.Series) -> Tuple[pd.Series, int, int]:
+    """
+    8 位 yyyyMMdd（纯数字字符串，或 [1e7,1e8) 内整数/浮点）：日向不合法（含 00、大于当月天数）一律改为 01；
+    月不在 1–12 则置空。向量化，按列一次扫描。
+    返回 (新列, 日改为_01_的单元格数, 非法月置空单元格数)。
+    """
+    out = ser.copy()
+    if len(ser) == 0:
+        return out, 0, 0
+    s = ser.astype(str).str.strip()
+    s = s.mask(s.str.lower().isin(["nan", "none"]), "")
+    mask8s = s.str.fullmatch(r"\d{8}", na=False)
+    num = pd.to_numeric(ser, errors="coerce")
+    imask = (
+        num.notna()
+        & (num == np.floor(num))
+        & (num >= 10_000_000)
+        & (num < 100_000_000)
+    )
+    proc = mask8s | imask
+    if not proc.any():
+        return out, 0, 0
+    s8 = pd.Series("", index=ser.index, dtype=object)
+    s8[imask] = num[imask].astype(np.int64).astype(str).str.zfill(8)
+    s8[mask8s] = s[mask8s]
+    sub = s8[proc]
+    y = sub.str[:4].to_numpy(dtype=np.int32)
+    mo = sub.str[4:6].to_numpy(dtype=np.int32)
+    dd = sub.str[6:8].to_numpy(dtype=np.int32)
+    valid_m = (mo >= 1) & (mo <= 12)
+    maxd = np.zeros(len(y), dtype=np.int16)
+    if valid_m.any():
+        vm = valid_m
+        maxd[vm] = _days_in_month_vectorized(y[vm], mo[vm])
+    dd_new = dd.copy()
+    bad_day = valid_m & ((dd == 0) | (dd > maxd))
+    dd_new[bad_day] = 1
+    invalid_m = ~valid_m
+    y_ser = pd.Series(y, index=sub.index).astype(str).str.zfill(4)
+    mo_ser = pd.Series(mo, index=sub.index).astype(str).str.zfill(2)
+    dn_ser = pd.Series(dd_new, index=sub.index).astype(str).str.zfill(2)
+    parts = (y_ser + "-" + mo_ser + "-" + dn_ser).to_numpy(dtype=object)
+    parts[invalid_m] = ""
+    out.loc[sub.index] = parts
+    return out, int(bad_day.sum()), int(invalid_m.sum())
+
+
 def _try_compact_yyyymmdd_str(s: str) -> Optional[str]:
-    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", s.strip())
-    if not m:
+    """None=非 8 位数字日期形态；''=月非法须置空；否则 YYYY-MM-DD（日非法已改为 01）。"""
+    t = s.strip()
+    if not re.match(r"^\d{8}$", t):
         return None
     try:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12 and 1 <= d <= 31:
-            return f"{y:04d}-{mo:02d}-{d:02d}"
-    except (ValueError, IndexError):
-        pass
-    return None
+        y, mo, d = int(t[:4]), int(t[4:6]), int(t[6:8])
+    except ValueError:
+        return None
+    if not (1 <= mo <= 12):
+        return ""
+    mx = _days_in_month_scalar(y, mo)
+    if d == 0 or d > mx:
+        d = 1
+    return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
 def _excel_serial_candidate_float(val: Any) -> Optional[float]:
@@ -444,6 +517,8 @@ def _normalize_date_cell_for_pg(val: Any, col_name: str) -> Tuple[str, int, bool
 
     c8 = _try_compact_yyyymmdd_str(s0)
     if c8 is not None:
+        if c8 == "":
+            return "", 0, False
         return c8, 1, False
 
     if allow_excel:
@@ -542,7 +617,8 @@ def _apply_date_cleaning(
     """
     对适用列清洗为 PostgreSQL date/timestamp 可解析文本（YYYY-MM-DD 或带时分秒）；
     支持 Excel 序列号、合法 ISO 文本原样保留；无法解析的非空值置空。
-    写 xxx_日期清洗结果（1=原空或成功，0=原非空且失败）。日=00 由「日期中00日处理」处理。
+    写 xxx_日期清洗结果（1=原空或成功，0=原非空且失败）。
+    8 位 yyyyMMdd 在向量化预处理后进入单格逻辑；横杠形式日=00 由「日期中00日处理」处理。
     """
     date_cols = _get_date_columns(df)
     if not date_cols:
@@ -550,12 +626,19 @@ def _apply_date_cleaning(
         report["date_clean_fail"] = 0
         report["date_unknown_formats"] = []
         report["date_excel_serial_converted_count"] = 0
+        report["date_yyyymmdd_day_to_01_count"] = 0
+        report["date_yyyymmdd_invalid_month_cleared_count"] = 0
         return df
     df = df.copy()
     success_per_cell = []
     unknown_formats_set = set()
     excel_serial_total = 0
+    ymd01_total = 0
+    ymd_bad_m_total = 0
     for col in date_cols:
+        df[col], n01, nbm = _vector_fix_compact_yyyymmdd_column(df[col])
+        ymd01_total += n01
+        ymd_bad_m_total += nbm
         result_col = f"{col}_日期清洗结果"
         cleaned = []
         flags = []
@@ -575,6 +658,8 @@ def _apply_date_cleaning(
     report["date_clean_fail"] = len(success_per_cell) - report["date_clean_success"]
     report["date_unknown_formats"] = sorted(unknown_formats_set)[:50]
     report["date_excel_serial_converted_count"] = excel_serial_total
+    report["date_yyyymmdd_day_to_01_count"] = ymd01_total
+    report["date_yyyymmdd_invalid_month_cleared_count"] = ymd_bad_m_total
     return df
 
 
@@ -881,6 +966,8 @@ def clean_dataframe(
         "date_clean_fail": 0,
         "date_unknown_formats": [],
         "date_excel_serial_converted_count": 0,
+        "date_yyyymmdd_day_to_01_count": 0,
+        "date_yyyymmdd_invalid_month_cleared_count": 0,
         "power_w_to_kw_count": 0,
         "station_inner_id_missing_rows": [],
         "pile_open_time_anomaly_rows": [],
